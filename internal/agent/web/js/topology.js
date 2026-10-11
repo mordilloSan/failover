@@ -370,7 +370,7 @@ export function probePulse() {
 export function renderGlobal() {
   const rel = /^v\d/.test(st.version) ? `/releases/tag/${encodeURIComponent(st.version)}` : ''; // a dev build has no release
   $('version').textContent = st.version;
-  $('version').href = `https://github.com/mordilloSan/homelab${rel}`;
+  $('version').href = `https://github.com/mordilloSan/failover${rel}`;
   const m = $('maintBtn'), busy = pending.has('maint:'), on = busy ? pending.get('maint:') : !!st.maint_until;
   const label = busy ? 'A aplicar…' : on ? `Manutenção do servidor até ${clock(st.maint_until)}. Carrega para desligar` : 'Manutenção do servidor';
   m.classList.toggle('on', on);

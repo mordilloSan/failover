@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mordilloSan/homelab/internal/agent"
+	"github.com/mordilloSan/failover/internal/agent"
 )
 
 // version is set at build time (-X main.version=v1.2.3) by the release workflow.
