@@ -1,5 +1,5 @@
 // The details sheet of a service, the server and the TNAS, and the service form.
-import {$, ago, bytes, chip, clock, confirmAction, esc, icon, kv, look, mono, paint, painted, pending, plural, readErr, sec, sentence, st, svcIcon, toLogin, toast, when} from './core.js';
+import {$, ago, bytes, chip, clock, clockS, confirmAction, esc, icon, kv, look, mono, paint, painted, pending, plural, readErr, sec, sentence, st, svcIcon, toLogin, toast, when} from './core.js';
 import {actions, allStacks, beatsBlock, fillBeats, imageList, imgCount, notesHtml, serverChip, serverHealth, statusBlock, stepsHtml, tnasChip, tnasHealth} from './topology.js';
 import {evItem, eventsNow, loadEvents} from './events.js';
 import {atHome, discOf, forgetDiscovery, getDiscovery} from './settings.js';
@@ -33,7 +33,7 @@ export function serverPanel() {
           : `<span class="${st.npm_alerted ? 'warn-text' : 'bad-text'}">Em falha ${esc(ago(st.npm_fail_since))}${st.npm_alerted ? ', com o servidor vivo: aviso enviado' : ''}</span>`],
         ['Servidor', !st.router_ok ? 'Por verificar' : st.server_up ? '<span class="ok-text">Responde</span>' : '<span class="bad-text">Não responde ao NPM nem a ping</span>'],
         ['Router', `${st.router_ok ? '<span class="ok-text">Acessível</span>' : '<span class="bad-text">Inacessível: o agente não decide nada</span>'} ${mono(st.router_ip)}`],
-        ['Última verificação', `às ${esc(new Date(st.now).toLocaleTimeString('pt-PT'))}`],
+        ['Última verificação', `às ${esc(clockS(st.now))}`],
       ]))
       + sec('Últimas verificações do NPM', beatsBlock('npm'))
       + sec('Serviços', `<ul class="list">${svcs}</ul>`),
@@ -88,9 +88,7 @@ export function tnasPanel() {
 export const MINUTES = [0, 1, 2, 3, 5, 10, 15, 20, 30, 45, 60];
 export function minuteSelect(s, field, min) {
   const key = `${field}:${s.name}`, v = pending.has(key) ? pending.get(key) : s[field];
-  const opts = [...new Set([...MINUTES.filter(m => m >= min), v])].sort((a, b) => a - b);
-  return `<select data-min="${field}" data-svc="${esc(s.name)}" ${pending.has(key) ? 'disabled' : ''}>
-    ${opts.map(m => `<option value="${m}" ${m === v ? 'selected' : ''}>${m} min</option>`).join('')}</select>`;
+  return `<select data-min="${field}" data-svc="${esc(s.name)}" ${pending.has(key) ? 'disabled' : ''}>${optMinutes(v, min)}</select>`;
 }
 
 // The service form: new (no name) or editing one. Its data (the mirror's
@@ -137,7 +135,7 @@ export function svcEditPanel() {
       ${field('dir', 'Pasta no espelho', `<select name="dir">${dirs.length ? '' : '<option value="">Nenhuma pasta com docker-compose.yml</option>'}${dirs.map(d => `<option ${d === v.dir ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select>`)}
       ${field('host', 'Endereço', `<input name="host" value="${esc(v.host)}" placeholder="nome.${esc(st.dns_zone)}" spellcheck="false">`, 'O nome que os clientes usam. No failover passa a apontar para o TNAS.')}
       ${field('override_yaml', 'Override (opcional)', `<textarea name="override_yaml" rows="6" spellcheck="false" placeholder="services:&#10;  nome-no-compose:&#10;    profiles: [&quot;disabled&quot;]">${esc(panel.data.override)}</textarea>`,
-        'Junta-se ao compose do espelho no failover, por exemplo para desligar um contentor. É verificado com docker compose antes de gravar.')}
+        'Junta-se ao compose do espelho no failover, por exemplo para desligar um contentor. É verificado com docker compose antes de guardar.')}
       ${field('require_free_ip', 'IP que tem de estar livre (opcional)', `<input name="require_free_ip" value="${esc(v.require_free_ip)}" spellcheck="false">`, 'Para serviços com IP próprio na LAN: a cópia não arranca se alguém já o usa.')}
     </fieldset></div>
     <div class="sec"><h3>Quando</h3><fieldset>
@@ -148,7 +146,7 @@ export function svcEditPanel() {
     ${notesHtml(discOf(v.dir)?.notes)}
     <p class="bad-text sec-err" id="svcErr" role="alert"></p>
   </form>`;
-  const foot = `${isNew ? '' : `<button type="button" class="btn" style="--b:var(--error)" data-remove="${esc(s.name)}" ${home ? '' : 'disabled title="Só com o serviço no servidor"'}>Remover serviço</button>`}
+  const foot = `${isNew ? '' : `<button type="button" class="btn danger" data-remove="${esc(s.name)}" ${home ? '' : 'disabled title="Só com o serviço no servidor"'}>Remover serviço</button>`}
     <span class="dlg-foot" style="margin:0 0 0 auto">${isNew ? '<button type="button" class="btn" data-close>Cancelar</button>'
       : `<button type="button" class="btn" data-panel="svc" data-svc="${esc(s.name)}">Cancelar</button>`}
     <button type="submit" form="svcForm" class="btn contained" id="svcSave">${isNew ? 'Adicionar' : 'Guardar'}</button></span>`;

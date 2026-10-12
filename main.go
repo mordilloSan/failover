@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mordilloSan/homelab/internal/agent"
+	"github.com/mordilloSan/failover/internal/agent"
 )
 
 // version is set at build time (-X main.version=v1.2.3) by the release workflow.
@@ -119,7 +119,7 @@ func serve(ctx context.Context, cfgPath, statePath string) error {
 	if err != nil {
 		return fmt.Errorf("interface: %w", err)
 	}
-	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 	if srv.TLSConfig, err = a.TLSConfig(); err != nil {
 		_ = ln.Close()
 		return err

@@ -22,8 +22,8 @@ No TNAS, em `/Volume1/Docker/failover/`, com o [docker-compose.yml](deploy/docke
 docker compose pull && docker compose up -d
 ```
 
-1. Abre `https://192.168.1.249:8099` nos **30 minutos** a seguir ao arranque e cria a conta de administrador. O browser avisa do certificado: é o do próprio agente, aceita-o uma vez.
-2. **Configurar em 1 minuto:** confirma a rede e os caminhos que o agente encontrou, entra com o utilizador do Technitium, escolhe o email dos avisos e marca os serviços a proteger. **Começar** grava tudo, faz um snapshot de teste e envia um email de teste. Cada bloco diz se correu bem.
+1. Abre `https://192.168.1.249:8099` nos **30 minutos** a seguir ao arranque e cria a conta de administrador com o código que o agente escreve no arranque (`docker logs failover-agent`). O browser avisa do certificado: é o do próprio agente, aceita-o uma vez.
+2. **Configurar em 1 minuto:** confirma a rede e os caminhos que o agente encontrou, cola o token da API do Technitium (Administração → Sessões → Criar token), escolhe o email dos avisos e marca os serviços a proteger. **Começar** guarda tudo, faz um snapshot de teste e envia um email de teste. Cada bloco diz se correu bem.
 3. Começa em observação. Quando os eventos mostrarem o que esperas, passa a automático em ⚙ Definições → Geral.
 
 ### O `*` da zona no Technitium
@@ -58,7 +58,7 @@ O agente só muda os nomes dos serviços que passa para o TNAS. O resto da zona 
 
 **Atualizar:** `docker compose pull && docker compose up -d`. A versão instalada: `docker compose run --rm failover-agent version`.
 
-**Password perdida:** `docker exec failover-agent rm /config/user.yml && docker restart failover-agent`, e cria a conta outra vez nos 30 minutos seguintes.
+**Password perdida:** `docker exec failover-agent rm /config/user.yml && docker restart failover-agent`, e cria a conta outra vez nos 30 minutos seguintes, com o código novo que o agente escreve no arranque (`docker logs failover-agent`).
 
 ## Usar
 
@@ -97,13 +97,13 @@ O agente só muda os nomes dos serviços que passa para o TNAS. O resto da zona 
             suffix: /2
   ```
 
-  O certificado do agente é autoassinado: o contentor do Homepage precisa de `NODE_TLS_REJECT_UNAUTHORIZED=0`, ou de confiar nele.
+  O certificado do agente é autoassinado: monta-o no contentor do Homepage e aponta `NODE_EXTRA_CA_CERTS=/…/state/certificates/0-self-signed.cert` para ele (o certificado inclui o IP do TNAS).
 
 ## Quando algo corre mal
 
 | O que se vê | O que fazer |
 |---|---|
-| A página diz que já não dá para criar a conta | `docker restart failover-agent` e cria-a nos 30 minutos seguintes |
+| A página diz que já não dá para criar a conta | `docker restart failover-agent` e cria-a nos 30 minutos seguintes, com o código que ele escreve em `docker logs failover-agent` |
 | Gmail: `535 Username and Password not accepted` | Usa uma [password de aplicação](https://myaccount.google.com/apppasswords) (precisa da verificação em 2 passos), não a password da conta |
 | Um serviço "sem endereço" na descoberta | O proxy host do NPM tem de apontar para o nome ou hostname do contentor, para o IP fixo de uma macvlan, ou para o IP do servidor numa porta que o compose publica |
 | "O docker compose config não deu nenhum serviço" | O compose no espelho só tem `profiles`, só tem `include`, ou falta-lhe o `.env` |

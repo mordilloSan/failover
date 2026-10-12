@@ -105,7 +105,7 @@ func (a *Agent) downloadIcon(srcs []string) ([]byte, error) {
 	err := errors.New("sem fontes")
 	for _, u := range srcs {
 		var b []byte
-		if b, err = a.sys.GetIcon(u); err == nil {
+		if b, err = a.sys.Get(u, ""); err == nil {
 			switch {
 			case len(b) > maxIcon:
 				err = errors.New("maior do que 512 KB")

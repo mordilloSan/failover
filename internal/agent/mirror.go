@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -97,7 +98,7 @@ func (a *Agent) mirrorFolders() {
 		return
 	}
 	var changed bool
-	for _, d := range sortedKeys(now) {
+	for _, d := range slices.Sorted(maps.Keys(now)) {
 		old, seen := st.MirrorSeen[d]
 		name := owner[d]
 		switch {
@@ -109,7 +110,7 @@ func (a *Agent) mirrorFolders() {
 			a.alert(name, "o docker-compose.yml mudou no espelho: as imagens e o que o TNAS precisa são verificados outra vez")
 		}
 	}
-	for _, d := range sortedKeys(st.MirrorSeen) {
+	for _, d := range slices.Sorted(maps.Keys(st.MirrorSeen)) {
 		if _, ok := now[d]; !ok && owner[d] != "" && owner[d] != "npm" && !fileExists(filepath.Join(root, d, "docker-compose.yml")) { // a clustered one is left out, not gone
 			a.alert(owner[d], "a pasta "+d+" já não está no espelho (ou perdeu o docker-compose.yml): o failover deste serviço não arranca")
 		}
@@ -121,24 +122,23 @@ func (a *Agent) mirrorFolders() {
 	}
 }
 
-func sortedKeys(m map[string]int64) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
-}
-
 // snapshotTest is a failover's first step, tried: the snapshots folder is a
 // btrfs volume, the mirror's, so a reflink copy of it works.
 func (a *Agent) snapshotTest(c Config) error {
 	test := filepath.Join(c.Paths.SnapshotsDir, "failover-teste-"+time.Now().Format("20060102-150405"))
 	_ = os.Mkdir(c.Paths.SnapshotsDir, 0o755) // one level: under a parent that exists
-	if err := a.copyMirror(c.Paths.MirrorSubvol, test); err != nil {
+	if err := a.sys.Run("btrfs", "subvolume", "create", test); err != nil {
 		return fmt.Errorf("snapshot de teste do espelho falhou (a pasta dos snapshots tem de estar num subvolume btrfs, no mesmo volume do espelho): %w", err)
 	}
-	return a.sys.Run("btrfs", "subvolume", "delete", test)
+	// one file is enough to prove the reflink (same btrfs volume); the mirror itself is not copied
+	err := a.sys.Run("cp", "--reflink=always", filepath.Join(c.Paths.MirrorSubvol, c.Paths.MirrorRoot, c.NPM.Dir, "docker-compose.yml"), test+"/")
+	if derr := a.sys.Run("btrfs", "subvolume", "delete", test); err == nil {
+		err = derr
+	}
+	if err != nil {
+		return fmt.Errorf("snapshot de teste do espelho falhou (a pasta dos snapshots tem de estar num subvolume btrfs, no mesmo volume do espelho): %w", err)
+	}
+	return nil
 }
 
 // Verdict is the answer to "if the server fell now, would the failover
@@ -164,6 +164,7 @@ func (a *Agent) checkReady() {
 		p = append(p, "o token do Technitium não serve: "+err.Error())
 	} else {
 		p = append(p, failoverProblems(a.sys, c, tok)...)
+		p = append(p, ownRecords(a.sys, c, tok)...)
 	}
 	if err := a.snapshotTest(c); err != nil {
 		p = append(p, err.Error())
@@ -211,6 +212,28 @@ func (a *Agent) checkReady() {
 	a.save()
 }
 
+// ownRecords finds the services' names that have an A or AAAA of their own: the
+// add (overwrite=true) would replace it and the return would delete it.
+func ownRecords(sys System, c Config, tok string) []string {
+	var p []string
+	for _, sv := range c.Services {
+		var rec struct {
+			Response struct {
+				Records []techRecord `json:"records"`
+			} `json:"response"`
+		}
+		if technitiumJSON(sys, c.DNS.APIURL, "zones/records/get", url.Values{"domain": {sv.Host}, "zone": {c.DNS.Zone}}, tok, &rec) != nil {
+			continue // unreadable is not a record: the token test above is the one that complains
+		}
+		for _, r := range rec.Response.Records {
+			if (r.Type == "A" || r.Type == "AAAA") && r.RData.IPAddress != c.TNASIP { // the TNAS's is the record the agent itself writes
+				p = append(p, sv.Name+": "+sv.Host+" tem um registo "+r.Type+" próprio ("+r.RData.IPAddress+"): o failover substituía-o e o regresso apagava-o; apaga-o ou deixa o nome seguir o *")
+			}
+		}
+	}
+	return p
+}
+
 func missingImages(st Stack) int {
 	n := 0
 	for _, im := range st.Images {
@@ -219,4 +242,24 @@ func missingImages(st Stack) int {
 		}
 	}
 	return n
+}
+
+// countImages counts the images the stacks need, each once however many stacks use it,
+// how many the TNAS has and their size.
+func countImages(stacks map[string]Stack) (present, total int, size int64) {
+	seen := map[string]bool{}
+	for _, st := range stacks {
+		for _, im := range st.Images {
+			if seen[im.Ref] {
+				continue
+			}
+			seen[im.Ref] = true
+			total++
+			if im.Present {
+				present++
+				size += im.Size
+			}
+		}
+	}
+	return present, total, size
 }

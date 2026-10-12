@@ -6,8 +6,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -71,7 +73,7 @@ func TestUI(t *testing.T) {
 	}
 	setupAccount := func(c *http.Client, user, pw, again string) string {
 		t.Helper()
-		resp, err := c.PostForm(srv.URL+"/setup", url.Values{"username": {user}, "password": {pw}, "password2": {again}})
+		resp, err := c.PostForm(srv.URL+"/setup", url.Values{"username": {user}, "password": {pw}, "password2": {again}, "code": {a.setupCode}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,28 +147,35 @@ func TestUI(t *testing.T) {
 	}
 }
 
-// The Technitium token in the UI is tested before it is saved.
+// The Technitium token in the UI is tested before it is saved; one that cannot
+// touch the zone is saved too, with a warning.
 func TestDNSToken(t *testing.T) {
 	a, f := setup(t)
-	post := func(body string) int {
+	post := func(body string) (int, string) {
 		t.Helper()
 		w := httptest.NewRecorder()
 		a.postDNS(w, httptest.NewRequest(http.MethodPost, "/api/dns", strings.NewReader(body)))
-		return w.Code
+		return w.Code, w.Body.String()
 	}
 	tokFile := a.cfg.DNS.TokenFile
 	if err := os.Remove(tokFile); err != nil {
 		t.Fatal(err)
 	}
-	if post(`{"token":" "}`) != 400 {
+	if c, _ := post(`{"token":" "}`); c != 400 {
 		t.Fatal("aceitou um token vazio")
 	}
 	f.badToken = "errado"
-	if post(`{"token":"errado"}`) != 400 || fileExists(tokFile) {
+	if c, _ := post(`{"token":"errado"}`); c != 400 || fileExists(tokFile) {
 		t.Fatal("token recusado pelo Technitium mas gravado")
 	}
-	if post(`{"token":" novo "}`) != 204 || !hasGet(f, "records/get?") {
-		t.Fatalf("token bom: não gravado ou não testado: %v", f.gets)
+	api := strings.TrimRight(a.cfg.DNS.APIURL, "/")
+	f.bodies = map[string][]byte{api + "/api/zones/records/get?domain=engmariz.com&zone=engmariz.com": []byte(`{"status":"error","errorMessage":"sem direitos"}`)}
+	if c, body := post(`{"token":"fraco"}`); c != 200 || !strings.Contains(body, "não mexe na zona") || !fileExists(tokFile) {
+		t.Fatalf("token sem direitos na zona: HTTP %d %s", c, body)
+	}
+	f.bodies = nil
+	if c, body := post(`{"token":" novo "}`); c != 200 || !strings.Contains(body, `"warning":""`) || !hasGet(f, "zones/list?") {
+		t.Fatalf("token bom: HTTP %d %s %v", c, body, f.gets)
 	}
 	if b, _ := os.ReadFile(tokFile); string(b) != "novo\n" {
 		t.Fatalf("token gravado: %q", b)
@@ -381,6 +390,8 @@ func withSession(a *Agent, r *http.Request) *http.Request {
 
 // With no account, the first visit makes one: only within 30 minutes of the
 // agent's start, and never over an account that exists.
+//
+//nolint:gocognit // one request table walked in order, like a session in the browser
 func TestFirstAccount(t *testing.T) {
 	a, _ := setup(t)
 	srv := httptest.NewServer(a.Handler())
@@ -412,23 +423,43 @@ func TestFirstAccount(t *testing.T) {
 	if got := post("/login", url.Values{"username": {"admin"}, "password": {"admin"}}); got != "/login" {
 		t.Fatalf("admin/admin ainda entra: %q", got)
 	}
+	if len(a.setupCode) != 12 {
+		t.Fatalf("código de arranque: %q", a.setupCode)
+	}
+	code := a.setupCode
 	for erro, v := range map[string]url.Values{
-		"curta":      {"username": {"miguel"}, "password": {"curta"}, "password2": {"curta"}},
-		"diferentes": {"username": {"miguel"}, "password": {"uma-password"}, "password2": {"outra-password"}},
-		"utilizador": {"username": {" "}, "password": {"uma-password"}, "password2": {"uma-password"}},
+		"curta":      {"username": {"miguel"}, "password": {"curta"}, "password2": {"curta"}, "code": {code}},
+		"diferentes": {"username": {"miguel"}, "password": {"uma-password"}, "password2": {"outra-password"}, "code": {code}},
+		"utilizador": {"username": {" "}, "password": {"uma-password"}, "password2": {"uma-password"}, "code": {code}},
+		"codigo":     {"username": {"miguel"}, "password": {"uma-password"}, "password2": {"uma-password"}},
 	} {
 		if got := post("/setup", v); got != "/login?erro="+erro {
 			t.Errorf("%s: %q", erro, got)
 		}
 	}
-	ok := url.Values{"username": {"miguel"}, "password": {"uma-password"}, "password2": {"uma-password"}}
+	ok := url.Values{"username": {"miguel"}, "password": {"uma-password"}, "password2": {"uma-password"}, "code": {"ERRADO"}}
+	if got := post("/setup", ok); got != "/login?erro=codigo" || fileExists(a.userPath) {
+		t.Fatalf("com um código errado: %q", got)
+	}
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/setup", strings.NewReader(url.Values{"username": {"miguel"}, "password": {"uma-password"}, "password2": {"uma-password"}, "code": {code}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || fileExists(a.userPath) {
+		t.Fatalf("pedido de outro site: HTTP %d", resp.StatusCode)
+	}
+	ok.Set("code", " "+strings.ToLower(code)+" ") // typed by hand, in lowercase
 	if got := post("/setup", ok); got != "/" {
 		t.Fatalf("criar: %q", got)
 	}
 	if b, _ := os.ReadFile(a.userPath); !strings.Contains(string(b), "miguel") || strings.Contains(string(b), "uma-password") {
 		t.Fatalf("user.yml: %s", b)
 	}
-	if got := post("/setup", url.Values{"username": {"intruso"}, "password": {"outra-password"}, "password2": {"outra-password"}}); got != "/login?erro=existe" {
+	if got := post("/setup", url.Values{"username": {"intruso"}, "password": {"outra-password"}, "password2": {"outra-password"}, "code": {code}}); got != "/login?erro=existe" {
 		t.Fatalf("criou por cima de uma conta: %q", got)
 	}
 
@@ -436,7 +467,7 @@ func TestFirstAccount(t *testing.T) {
 	late.started = time.Now().Add(-31 * time.Minute)
 	srv2 := httptest.NewServer(late.Handler())
 	defer srv2.Close()
-	resp, err := http.Get(srv2.URL + "/login")
+	resp, err = http.Get(srv2.URL + "/login")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,5 +529,103 @@ func TestLoginVersion(t *testing.T) {
 	a.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/login", nil))
 	if b := w.Body.String(); !strings.Contains(b, "failover-agent "+Version) || strings.Contains(b, a.cfg.TNASIP) {
 		t.Fatalf("página de login: %s", b[len(b)-400:])
+	}
+}
+
+// Five wrong logins in a row lock the form for a minute, even for the right
+// password, and the bcrypt checks run at most loginSlots at a time.
+func TestLoginLockoutAndSlots(t *testing.T) {
+	a, _ := setup(t)
+	c, err := newCreds("admin", "uma-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.creds.Store(c)
+	login := func(pw string) string {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(url.Values{"username": {"admin"}, "password": {pw}}.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		a.Handler().ServeHTTP(w, r)
+		return w.Header().Get("Location")
+	}
+	for range 4 { // a right one in between starts the count again
+		login("errada")
+	}
+	if got := login("uma-password"); got != "/" {
+		t.Fatalf("login certo: %q", got)
+	}
+	for i := range 5 { // the 5th wrong one is answered as wrong, and is the one that locks
+		if got := login("errada"); got != "/login?erro=1" {
+			t.Fatalf("errado %d depois de um login certo: %q", i+1, got)
+		}
+	}
+	if got := login("uma-password"); got != "/login?erro=bloqueado" {
+		t.Fatalf("depois de 5 falhas: %q", got)
+	}
+	a.sessions.mu.Lock()
+	a.sessions.lockedUntil = time.Time{}
+	a.sessions.mu.Unlock()
+	if got := login("uma-password"); got != "/" {
+		t.Fatalf("depois do bloqueio: %q", got)
+	}
+
+	for range cap(loginSlots) {
+		loginSlots <- struct{}{}
+	}
+	got := login("uma-password")
+	for range cap(loginSlots) {
+		<-loginSlots
+	}
+	if got != "/login?erro=ocupado" {
+		t.Fatalf("com os lugares cheios: %q", got)
+	}
+}
+
+// Every response carries the CSP and nosniff; the login page's one inline
+// script is allowed by the hash of exactly what is served, and the icons keep
+// their own stricter policy.
+func TestSecurityHeaders(t *testing.T) {
+	a, _ := setup(t)
+	if err := os.MkdirAll(a.iconDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a.iconDir(), "nextcloud"), pngIcon, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	get := func(path string, session bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		if session {
+			r = withSession(a, r)
+		}
+		w := httptest.NewRecorder()
+		a.Handler().ServeHTTP(w, r)
+		return w
+	}
+	for _, p := range []struct {
+		path    string
+		session bool
+	}{{"/", true}, {"/login", false}} {
+		w := get(p.path, p.session)
+		if w.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "default-src 'self'") {
+			t.Errorf("%s: %v", p.path, w.Header())
+		}
+	}
+	w := get("/icons/nextcloud", true)
+	if got := w.Header().Get("Content-Security-Policy"); w.Code != 200 || !strings.HasSuffix(got, "sandbox") || strings.Contains(got, "'self'") {
+		t.Errorf("ícone: HTTP %d, CSP %q", w.Code, got)
+	}
+
+	// no account (the setup form) and with one: the substitutions stay outside the script
+	c, _ := newCreds("admin", "uma-password")
+	for _, creds := range []*creds{nil, c} {
+		a.creds.Store(creds)
+		w := get("/login", false)
+		body := w.Body.String()
+		i := strings.Index(body, "<script>") + len("<script>")
+		j := strings.LastIndex(body, "</script>")
+		sum := sha256.Sum256([]byte(body[i:j]))
+		if want := "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"; !strings.Contains(w.Header().Get("Content-Security-Policy"), "script-src 'self' "+want+";") {
+			t.Errorf("o hash do script servido (%s) não está na CSP: %s", want, w.Header().Get("Content-Security-Policy"))
+		}
 	}
 }

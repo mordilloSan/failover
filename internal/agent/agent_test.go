@@ -37,6 +37,7 @@ type fake struct {
 	bodies   map[string][]byte // exact URL → what Get answers
 	mails    []Mail            // every email sent
 	failMail error             // SendMail fails with this
+	resolved []string          // every ip whose resolver Resolve asked
 }
 
 func (f *fake) SendMail(m Mail) error {
@@ -55,8 +56,6 @@ func mailed(f *fake, sub string) bool {
 	defer f.mu.Unlock()
 	return slices.ContainsFunc(f.mails, func(m Mail) bool { return strings.Contains(m.Subject+m.Body, sub) })
 }
-
-func (f *fake) GetIcon(u string) ([]byte, error) { return f.Get(u, "") }
 
 func (f *fake) PortFree(proto, addr string) error {
 	f.mu.Lock()
@@ -79,6 +78,7 @@ func (f *fake) Answers(ip, _ string) error {
 func (f *fake) Resolve(ip string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.resolved = append(f.resolved, ip)
 	if f.noNet[ip] {
 		return errors.New("server misbehaving")
 	}
@@ -117,7 +117,7 @@ func (f *fake) Output(name string, args ...string) (string, error) {
 	defer f.mu.Unlock()
 	c := strings.Join(append([]string{name}, args...), " ")
 	f.scans = append(f.scans, c)
-	if name == "docker" && (args[0] == "ps" || args[0] == "volume") { // what compose down left behind
+	if name == "docker" && ((args[0] == "ps" && slices.Contains(args, "-a")) || args[0] == "volume") { // what compose down left behind
 		return f.left[strings.TrimPrefix(args[len(args)-1], "label=com.docker.compose.project=")], nil
 	}
 	best := ""

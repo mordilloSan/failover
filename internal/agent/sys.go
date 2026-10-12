@@ -96,7 +96,7 @@ func (RealSys) Check(host, ip string) error {
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 500 { // a 401 or a 404 is the service answering: only a 5xx, or no answer, is down
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return nil
@@ -144,24 +144,6 @@ func lookupAt(ip, name string) error {
 }
 
 var apiClient = &http.Client{Timeout: 10 * time.Second}
-
-// GetIcon downloads an icon from the CDN iconSources names.
-func (RealSys) GetIcon(u string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return nil, errors.New("URL inválido")
-	}
-	resp, err := apiClient.Do(req)
-	if err != nil {
-		return nil, unwrapURL(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode >= 300 {
-		return body, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return body, err
-}
 
 func (RealSys) Get(u, bearer string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodGet, u, nil)

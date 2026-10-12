@@ -99,8 +99,13 @@ func TestSectionCheck(t *testing.T) {
 	}) {
 		t.Fatalf("o snapshot de teste não foi apagado: %v", f.cmds)
 	}
+	if !slices.ContainsFunc(f.cmds, func(c string) bool {
+		return strings.HasPrefix(c, "cp --reflink=always ") && strings.Contains(c, "/docker-compose.yml ")
+	}) {
+		t.Fatalf("o teste copiou mais do que um ficheiro: %v", f.cmds)
+	}
 	f.failCmd = []string{"cp "}
-	if r := check(); r["snap"].OK || !strings.Contains(r["snap"].Msg, "reflink") {
+	if r := check(); r["snap"].OK || !strings.Contains(r["snap"].Msg, "mesmo volume") {
 		t.Fatalf("a cópia com reflink falhou e o teste passou: %+v", r)
 	}
 	if left, _ := filepath.Glob(a.cfg.Paths.SnapshotsDir + "/failover-teste-*"); len(left) > 0 {

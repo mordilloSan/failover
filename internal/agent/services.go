@@ -228,7 +228,7 @@ func (a *Agent) postService(w http.ResponseWriter, r *http.Request) {
 	if checked != "" {
 		var err error
 		if undo, err = placeOverride(checked, filepath.Join(next.Paths.OverridesDir, sv.Override)); err != nil {
-			fieldErr(w, "override_yaml", "gravar o override: "+err.Error())
+			fieldErr(w, "override_yaml", "guardar o override: "+err.Error())
 			return
 		}
 	}
@@ -279,7 +279,7 @@ func (a *Agent) checkOverride(w http.ResponseWriter, dir, name, file, compose, y
 	}
 	tmp := filepath.Join(dir, "."+file+".check")
 	if err := writeAtomic(tmp, []byte(yml+"\n")); err != nil {
-		fieldErr(w, "override_yaml", "gravar o override: "+err.Error())
+		fieldErr(w, "override_yaml", "guardar o override: "+err.Error())
 		return "", false
 	}
 	if err := a.sys.Run("docker", "compose", "-p", "failover-"+name, "-f", compose, "-f", tmp, "config", "-q"); err != nil {

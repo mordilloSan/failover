@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt">
+<html lang="pt-PT">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,6 +7,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#1b2635">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232052c2'/%3E%3Cpath fill='%23fff' transform='translate(2.4 2.4) scale(.8)' d='m21 9l-4-4v3h-7v2h7v3M7 11l-4 4l4 4v-3h7v-2H7z'/%3E%3C/svg%3E">
+<link rel="preload" href="inter.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="app.css">
 <!-- the modules main.js pulls in, asked for at once instead of one import level at a time -->
 <link rel="modulepreload" href="js/core.js">
@@ -66,7 +67,7 @@
   <section class="page" id="page-setup" hidden>
     <div class="setup">
       <div class="card-head" style="margin:0 4px -8px"><h2>Configurar em 1 minuto</h2></div>
-      <p class="note-text" style="margin:0 4px">O agente já procurou o que pôde no TNAS e no espelho. Confirma, completa o que falta e carrega em Começar: grava tudo e diz como correu cada bloco.</p>
+      <p class="note-text" style="margin:0 4px">O agente já procurou o que pôde no TNAS e no espelho. Confirma, completa o que falta e carrega em Começar: guarda tudo e diz como correu cada bloco.</p>
       <section class="card set-sec" id="su-rede"></section>
       <section class="card set-sec" id="su-paths"></section>
       <section class="card set-sec" id="su-tech"></section>
@@ -96,7 +97,7 @@
   </section>
 </main>
 
-<dialog id="confirm">
+<dialog id="confirm" aria-labelledby="dlgTitle">
   <form method="dialog">
     <h2 id="dlgTitle"></h2>
     <p id="dlgBody"></p>

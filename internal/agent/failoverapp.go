@@ -228,7 +228,7 @@ func applyFailover(sys System, c Config, tok string) ([]string, error) {
 	q := url.Values{"domain": {zone}, "zone": {c.DNS.Zone}, "type": {"APP"}, "ttl": {strconv.Itoa(c.DNS.TTL)}, "overwrite": {"true"},
 		"appName": {failoverApp}, "classPath": {failoverClass}, "recordData": {string(data)}}
 	if err := technitiumJSON(sys, c.DNS.APIURL, "zones/records/add", q, tok, nil); err != nil {
-		return done, fmt.Errorf("gravar o %s: %w", zone, err)
+		return done, fmt.Errorf("guardar o %s: %w", zone, err)
 	}
 	done = append(done, zone+" com a app Failover ("+want.String()+")")
 	for _, r := range recs {

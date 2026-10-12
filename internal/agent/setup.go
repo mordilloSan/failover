@@ -67,7 +67,6 @@ func newCreds(user, pw string) (*creds, error) {
 func loadUser(path string) (*creds, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		slog.Warn("sem conta: abre a interface nos próximos 30 minutos para a criar", "file", path)
 		return nil, nil
 	}
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -275,6 +276,7 @@ type SvcState struct {
 	OnTNAS     time.Time `json:"on_tnas,omitzero"`   // since when the copy serves (ACTIVE), kept until it is back
 	LastErr    string    `json:"last_err,omitempty"` // the last failover error: a retry that fails the same way is not emailed again
 	Steps      []Step    `json:"steps,omitempty"`    // the last failover's steps, for the page and the email; kept until it is back
+	CopyMAC    string    `json:"copy_mac,omitempty"` // the copy's MAC on the fixed IP (require_free_ip): ARP from another MAC means the server's container is back
 }
 
 // Step is one step of a failover, done at At.
@@ -329,6 +331,8 @@ type State struct {
 	MirrorNew      []string          `json:"mirror_new,omitempty"`    // new folders, not protected, until seen in the page
 	Verdict        Verdict           `json:"verdict,omitzero"`
 	NPMAlerted     bool              `json:"npm_alerted,omitempty"`
+	RouterChanged  time.Time         `json:"router_changed,omitzero"` // since when the router answers or not
+	RouterTold     bool              `json:"router_told,omitempty"`   // its outage was emailed
 	TNASNPM        struct {
 		Snapshot string    `json:"snapshot,omitempty"`
 		Since    time.Time `json:"since,omitzero"`
@@ -355,9 +359,8 @@ type System interface {
 	Output(name string, args ...string) (string, error) // same, when stdout matters (image scan)
 	Check(host, ip string) error                        // https://host with the connection sent to ip (curl --resolve)
 	Get(url, bearer string) ([]byte, error)
-	Resolve(ip string) error            // the resolver at ip answers for a name from the internet
-	Answers(ip, zone string) error      // the DNS server at ip answers for its own zone
-	GetIcon(url string) ([]byte, error) // like Get, for the icons' CDN
+	Resolve(ip string) error       // the resolver at ip answers for a name from the internet
+	Answers(ip, zone string) error // the DNS server at ip answers for its own zone
 	SendMail(m Mail) error
 	PortFree(proto, addr string) error // nothing listens on addr of this host (the agent runs with its network)
 }
@@ -403,6 +406,7 @@ type Agent struct {
 	userPath   string
 	creds      atomic.Pointer[creds] // read by every request, so outside mu; nil: no account yet
 	started    time.Time             // the account can be made in the first 30 minutes after it
+	setupCode  string                // asked by POST /setup, so a device on the LAN cannot make the account first; written to the log
 	lastBeat   atomic.Int64          // the last check or command that ended, as time since started (monotonic), for the watchdog
 	watchCfg   atomic.Pointer[watchCfg]
 	exit       func(code int)      // os.Exit; tests set another
@@ -451,6 +455,10 @@ func NewAgent(cfg Config, cfgPath, statePath string, sys System) (*Agent, error)
 		return nil, err
 	}
 	a.creds.Store(c)
+	if c == nil { // whoever can read the container's log may make the account, not any device on the LAN
+		a.setupCode = rand.Text()[:12]
+		slog.Warn("sem conta: cria-a na interface nos próximos 30 minutos com este código", "code", a.setupCode)
+	}
 	a.exit, a.sleep = os.Exit, time.Sleep
 	if a.st.Running {
 		a.crashed()
@@ -472,6 +480,7 @@ func (a *Agent) Run(ctx context.Context) {
 		a.st.Running = false
 		a.save()
 		a.mu.Unlock()
+		a.mailJobs.Wait() // a queued email is sent before the process ends: its timeouts are far under the stop grace
 	}()
 	for first := true; ; first = false {
 		a.mu.Lock()
@@ -497,16 +506,17 @@ func (a *Agent) Run(ctx context.Context) {
 }
 
 // fastCheck is the check interval while a service waits out wait_min or
-// stability_min: its failover or return starts seconds after the wait ends,
-// not up to a whole check interval later. The waits themselves do not change.
+// stability_min, or while its copy is starting: its failover or return starts
+// seconds after the wait ends, and the DNS changes seconds after the copy
+// answers, not up to a whole check interval later. The waits themselves do not change.
 const fastCheck = 5 * time.Second
 
-// waiting says whether a service is failing before its failover, or back on
-// the server before its return; under mu. One only observed (mode observação)
-// or forced has nothing to start, so it does not count.
+// waiting says whether a service is failing before its failover, starting
+// its copy, or back on the server before its return; under mu. One only
+// observed (mode observação) or forced has nothing to start, so it does not count.
 func (a *Agent) waiting() bool {
 	for _, s := range a.st.Services {
-		if !s.Observed && (s.State == Normal && !s.FailSince.IsZero() || s.State == Active && !s.OKSince.IsZero() && !s.Forced) {
+		if !s.Observed && (s.State == FailingOver || s.State == Normal && !s.FailSince.IsZero() || s.State == Active && !s.OKSince.IsZero() && !s.Forced) {
 			return true
 		}
 	}
@@ -630,6 +640,12 @@ func (a *Agent) probe() probe {
 	a.mu.Lock()
 	c := a.cfg // the UI replaces a.cfg and never edits it in place, so this copy is safe to read
 	tnasNPM := a.st.TNASNPM.Snapshot != ""
+	macs := map[string]string{} // service → its copy's MAC, for an ACTIVE one with its own IP
+	for _, sv := range c.Services {
+		if s := a.st.Services[sv.Name]; s != nil && s.State == Active && sv.RequireFreeIP != "" && s.CopyMAC != "" {
+			macs[sv.Name] = s.CopyMAC
+		}
+	}
 	a.mu.Unlock()
 
 	t0 := time.Now()
@@ -654,28 +670,48 @@ func (a *Agent) probe() probe {
 	if !p.routerOK {
 		return p
 	}
-	if p.npmOK, p.npmMs = timed(c.Server.NPMCheckHost, c.Server.IP); !p.npmOK {
-		p.serverPing = a.ping(c.Server.IP)
-	}
+	var pinged sync.WaitGroup // the ping runs beside the NPM check: with the server down both wait out a timeout
+	var ping bool
+	pinged.Go(func() { ping = a.ping(c.Server.IP) })
+	p.npmOK, p.npmMs = timed(c.Server.NPMCheckHost, c.Server.IP)
+	pinged.Wait()
+	p.serverPing = !p.npmOK && ping // used only when the NPM failed
 	ok, ms := make([]bool, len(c.Services)), make([]int, len(c.Services))
 	var wg sync.WaitGroup
 	if p.npmOK { // with the NPM down every service is down
 		for i, sv := range c.Services {
-			wg.Go(func() { ok[i], ms[i] = timed(sv.Host, c.Server.IP) })
+			wg.Go(func() {
+				ok[i], ms[i] = timed(sv.Host, c.Server.IP)
+				if mac := macs[sv.Name]; ok[i] && mac != "" {
+					ok[i] = a.serverHoldsIP(c.LANIface, sv.RequireFreeIP, mac)
+				}
+			})
 		}
 	}
 	if tnasNPM {
 		wg.Go(func() { p.tnasNPMOK = check(c.Server.NPMCheckHost, c.TNASIP) })
 	}
 	wg.Go(func() { p.tnasNet = a.sys.Resolve(c.TNASIP) == nil })
-	wg.Go(func() { p.serverNet = a.sys.Resolve(c.Server.IP) == nil })
 	wg.Go(func() { p.tnasDNS = a.sys.Answers(c.TNASIP, c.DNS.Zone) == nil })
-	wg.Go(func() { p.serverDNS = a.sys.Answers(c.Server.IP, c.DNS.Zone) == nil })
+	if p.npmOK || p.serverPing { // evaluate ignores the server's DNS when it is down: not worth its timeouts
+		wg.Go(func() { p.serverNet = a.sys.Resolve(c.Server.IP) == nil })
+		wg.Go(func() { p.serverDNS = a.sys.Answers(c.Server.IP, c.DNS.Zone) == nil })
+	}
 	wg.Wait()
 	for i, sv := range c.Services {
 		p.svcOK[sv.Name], p.svcMs[sv.Name] = ok[i], ms[i]
 	}
 	return p
+}
+
+var reMAC = regexp.MustCompile(`\[([0-9A-Fa-f:]{17})\]`)
+
+// serverHoldsIP: the fixed IP answers ARP from a MAC other than the copy's, so the
+// server's container is back. No answer, or the copy's MAC, means it is not.
+func (a *Agent) serverHoldsIP(iface, ip, copyMAC string) bool {
+	out, err := a.sys.Output("arping", "-c", "1", "-w", "3", "-I", iface, ip)
+	m := reMAC.FindStringSubmatch(out)
+	return err == nil && m != nil && !strings.EqualFold(m[1], copyMAC)
 }
 
 // internetErr asks Docker Hub, where a failover pulls a missing image, at start. Any
@@ -737,6 +773,26 @@ func (a *Agent) netSeen(was *bool, asked, ok bool, who string) {
 	}
 }
 
+// routerSeen logs a change of the router and emails an outage that lasts.
+func (a *Agent) routerSeen(ok bool) {
+	st := &a.st
+	if st.RouterChanged.IsZero() { // an older state has no time: counted from this check
+		st.RouterChanged = a.now
+	}
+	if ok != st.RouterOK {
+		st.RouterOK, st.RouterChanged = ok, a.now
+		a.event("", map[bool]string{true: "router acessível", false: "router inacessível: sem ações"}[ok])
+		if ok && st.RouterTold { // the outage was emailed: so is its end
+			a.mail("", "router acessível outra vez")
+		}
+		st.RouterTold = false
+	}
+	if !st.RouterOK && !st.RouterTold && a.now.After(st.RouterChanged) { // one lost ping is a blip: told at the second check
+		st.RouterTold = true
+		a.mail("", "router inacessível desde as "+st.RouterChanged.Format("15:04")+": sem ações")
+	}
+}
+
 func (a *Agent) evaluate(p probe) {
 	c, st := &a.cfg, &a.st
 	a.record(p)
@@ -761,10 +817,7 @@ func (a *Agent) evaluate(p probe) {
 		a.event("", map[bool]string{true: "o TNAS responde no IP da LAN", false: "o TNAS não responde no próprio IP da LAN"}[p.tnasPing])
 	}
 	a.routerMs = p.routerMs
-	if p.routerOK != st.RouterOK {
-		st.RouterOK = p.routerOK
-		a.alert("", map[bool]string{true: "router acessível", false: "router inacessível: sem ações"}[p.routerOK])
-	}
+	a.routerSeen(p.routerOK)
 	if !st.RouterOK {
 		return
 	}
@@ -898,7 +951,7 @@ func (a *Agent) set(s *SvcState, state string) {
 	case Active:
 		s.OnTNAS = a.now
 	case Normal:
-		s.OnTNAS, s.LastErr, s.Steps = time.Time{}, "", nil
+		s.OnTNAS, s.LastErr, s.Steps, s.CopyMAC = time.Time{}, "", nil, ""
 	case Error:
 		s.OnTNAS = time.Time{}
 	}
@@ -915,7 +968,8 @@ func (a *Agent) step(sv Service, s *SvcState, known, ok bool) {
 	}
 	switch s.State {
 	case Normal:
-		if !known {
+		if !known { // nothing is known of the service: a failure seen before does not keep counting
+			s.FailSince, s.Observed = time.Time{}, false
 			return
 		}
 		if ok || a.inMaint(s) {
@@ -945,6 +999,7 @@ func (a *Agent) step(sv Service, s *SvcState, known, ok bool) {
 		a.failover(sv, s)
 	case Active:
 		if !known {
+			s.OKSince = time.Time{}
 			return
 		}
 		if !ok {
@@ -976,28 +1031,41 @@ func (a *Agent) step(sv Service, s *SvcState, known, ok bool) {
 		case known && ok: // healthy on the server again: clean up whatever is left and reset
 			a.set(s, Returning)
 			a.giveBack(sv, s)
-		case known && auto && !a.inMaint(s) && a.home(s) && a.now.Sub(s.Since) >= minutes(a.cfg.StartTimeoutMin):
-			// still down on the server: try again, as its cause may be gone (the
-			// internet back for a pull, a port freed, an override fixed)
-			a.event(sv.Name, "nova tentativa de failover depois do erro: "+s.Msg)
-			a.set(s, FailingOver)
-			a.failover(sv, s)
+		case known && auto && !a.inMaint(s) && a.now.Sub(s.Since) >= minutes(a.cfg.StartTimeoutMin):
+			a.retryFailover(sv, s)
 		}
 	}
+}
+
+// retryFailover tries again a service in ERROR that is still down on the
+// server, as the cause may be gone (the internet back for a pull, a port freed,
+// an override fixed).
+func (a *Agent) retryFailover(sv Service, s *SvcState) {
+	if !a.home(s) { // the cleanup failed last time: it goes first, and a failure waits another timeout
+		if err := a.teardown(sv, s); err != nil {
+			s.Since = a.now
+			a.event(sv.Name, "limpeza da cópia falhou outra vez: "+err.Error())
+			return
+		}
+	}
+	a.event(sv.Name, "nova tentativa de failover depois do erro: "+s.Msg)
+	a.set(s, FailingOver)
+	a.failover(sv, s)
 }
 
 // waitCopy asks the copy, through the TNAS NPM, whether it answers (R5):
 // the DNS changes only once it does.
 func (a *Agent) waitCopy(sv Service, s *SvcState) error {
 	c := &a.cfg
-	// It is asked again every 5 s for up to a minute (never more than one
-	// check interval), so the DNS changes seconds after the copy answers.
+	// It is asked again every 5 s for up to 15 s (never more than one check
+	// interval), so the DNS changes seconds after the copy answers; a copy that
+	// is still starting is asked again 5 s later by the next tick (waiting).
 	// ponytail: services are stepped one after another under mu, so a copy
-	// that never answers delays the next one by that minute each tick until
+	// that never answers delays the next one by those 15 s each tick until
 	// its start timeout; a shared poll over all FAILING_OVER copies if it hurts.
 	var err error
-	deadline := time.Now().Add(time.Duration(min(c.CheckIntervalS, 60)) * time.Second)
-	for try := range max(1, min(c.CheckIntervalS, 60)/copyPoll) {
+	deadline := time.Now().Add(time.Duration(min(c.CheckIntervalS, 15)) * time.Second)
+	for try := range max(1, min(c.CheckIntervalS, 15)/copyPoll) {
 		if try > 0 {
 			if time.Now().Add(copyPoll * time.Second).After(deadline) {
 				break
@@ -1058,13 +1126,16 @@ func (a *Agent) failover(sv Service, s *SvcState) {
 
 // addDNS points the service's name to the TNAS, unless it already does.
 func (a *Agent) addDNS(sv Service, s *SvcState) error {
-	if s.DNS {
+	if hasStep(s, "DNS") {
 		return nil
+	}
+	if !s.DNS { // the record may exist even when the answer is lost: the cleanup must delete it
+		s.DNS = true
+		a.save()
 	}
 	if err := a.dns("add", sv.Host); err != nil {
 		return fmt.Errorf("DNS: %w", err)
 	}
-	s.DNS = true
 	s.Msg = ""
 	a.markStep(s, "DNS")
 	a.event(sv.Name, "DNS: "+sv.Host+" → "+a.cfg.TNASIP+" (TNAS)")
@@ -1117,10 +1188,30 @@ func (a *Agent) upCopy(sv Service, s *SvcState) bool {
 		a.fail(sv, s, "compose up: "+err.Error())
 		return false
 	}
+	if sv.RequireFreeIP != "" {
+		s.CopyMAC = a.copyMAC(sv)
+	}
 	// the tick's clock, moved by the whole minutes this tick has taken (a slow pull, the NPM's start)
 	s.Since = a.now.Add(time.Since(a.tickAt).Truncate(time.Minute))
 	a.markStep(s, "arranque")
 	return true
+}
+
+// copyMAC is the MAC of the copy's container that holds the service's fixed IP; "" when
+// Docker does not say (the probe then trusts the check, as before).
+func (a *Agent) copyMAC(sv Service) string {
+	ids, err := a.sys.Output("docker", "ps", "-q", "--filter", "label=com.docker.compose.project=failover-"+sv.Name)
+	if err != nil || strings.TrimSpace(ids) == "" {
+		return ""
+	}
+	args := append([]string{"inspect", "--format", `{{range .NetworkSettings.Networks}}{{.IPAddress}} {{.MacAddress}}{{"\n"}}{{end}}`}, strings.Fields(ids)...)
+	out, _ := a.sys.Output("docker", args...)
+	for line := range strings.SplitSeq(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[0] == sv.RequireFreeIP {
+			return strings.ToLower(f[1])
+		}
+	}
+	return ""
 }
 
 func hasStep(s *SvcState, name string) bool {
@@ -1130,12 +1221,7 @@ func hasStep(s *SvcState, name string) bool {
 // pullMissing pulls the images of stack the last scan did not find on the
 // TNAS, as a step of its own the page shows.
 func (a *Agent) pullMissing(stack string, s *SvcState, files []string) error {
-	var n int
-	for _, im := range a.st.Images[stack].Images {
-		if !im.Present {
-			n++
-		}
-	}
+	n := missingImages(a.st.Images[stack])
 	if n == 0 {
 		return nil
 	}
@@ -1255,6 +1341,7 @@ func (a *Agent) stopIdleNPM() {
 	}
 	err := a.down("", "npm")
 	if err == nil {
+		n.Up, n.OK = false, false // its containers are gone, whatever the snapshot delete does
 		err = a.deleteSnapshot("", n.Snapshot)
 	}
 	if err != nil {
@@ -1531,22 +1618,9 @@ func logImageBalance(stacks map[string]Stack) { slog.Info("imagens: " + imageBal
 // imageBalance is how many of the images the stacks need the TNAS has, each
 // counted once however many stacks use it: "5 de 6 no TNAS, 2,5 GB".
 func imageBalance(stacks map[string]Stack) string {
-	seen := map[string]Image{}
-	for _, st := range stacks {
-		for _, im := range st.Images {
-			seen[im.Ref] = im
-		}
-	}
-	var present int
-	var size int64
-	for _, im := range seen {
-		if im.Present {
-			present++
-			size += im.Size
-		}
-	}
+	present, total, size := countImages(stacks)
 	gb := strings.Replace(strconv.FormatFloat(float64(size)/1e9, 'f', 1, 64), ".", ",", 1)
-	return fmt.Sprintf("%d de %d no TNAS, %s GB", present, len(seen), gb)
+	return fmt.Sprintf("%d de %d no TNAS, %s GB", present, total, gb)
 }
 
 // nightly pulls every image once a day after prepull_at, from the compose

@@ -13,7 +13,7 @@ import (
 )
 
 // setting ties a key of failover.yml to its section in the settings page.
-// locked: only while every service is on the server (Rede, Caminhos);
+// locked: only while every service is on the server (Rede, Caminhos, the DNS zone and API);
 // secret: never sent back, and an empty value keeps the current one.
 type setting struct {
 	key, section   string
@@ -43,8 +43,8 @@ var settings = []setting{
 	num("start_timeout_min", "verificacao", func(c *Config) *int { return &c.StartTimeoutMin }),
 	num("npm.alert_after_min", "verificacao", func(c *Config) *int { return &c.NPM.AlertAfterMin }),
 	num("maintenance.default_expiry_min", "verificacao", func(c *Config) *int { return &c.Maintenance.DefaultExpiryMin }),
-	str("dns.api_url", "dns", func(c *Config) *string { return &c.DNS.APIURL }),
-	str("dns.zone", "dns", func(c *Config) *string { return &c.DNS.Zone }),
+	locked(str("dns.api_url", "dns", func(c *Config) *string { return &c.DNS.APIURL })),
+	locked(str("dns.zone", "dns", func(c *Config) *string { return &c.DNS.Zone })),
 	num("dns.ttl", "dns", func(c *Config) *int { return &c.DNS.TTL }),
 	locked(str("paths.mirror_subvol", "caminhos", func(c *Config) *string { return &c.Paths.MirrorSubvol })),
 	locked(str("paths.mirror_root", "caminhos", func(c *Config) *string { return &c.Paths.MirrorRoot })),

@@ -87,7 +87,7 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(github.com/mordilloSan/homelab)
+        - prefix(github.com/mordilloSan/failover)
   enable:
     - gofmt
     - gci

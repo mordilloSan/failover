@@ -320,33 +320,6 @@ func TestDiscoverNothing(t *testing.T) {
 	}
 }
 
-// The Technitium login makes a token and keeps it; the password is never kept.
-func TestTechnitiumLogin(t *testing.T) {
-	a, f := setup(t)
-	api := strings.TrimRight(a.cfg.DNS.APIURL, "/")
-	f.bodies = map[string][]byte{
-		api + "/api/user/createToken?pass=certa&tokenName=failover-agent&user=admin":  []byte(`{"status":"ok","username":"admin","tokenName":"failover-agent","token":"novo-token"}`),
-		api + "/api/user/createToken?pass=errada&tokenName=failover-agent&user=admin": []byte(`{"status":"error","errorMessage":"Invalid username or password."}`),
-	}
-	if code, body := postTo(t, a.postTechnitiumLogin, `{"user":"admin","pass":"errada"}`); code != 400 || !strings.Contains(body, "Invalid username") {
-		t.Fatalf("password errada: HTTP %d %s", code, body)
-	}
-	if b, _ := os.ReadFile(a.cfg.DNS.TokenFile); strings.TrimSpace(string(b)) != "secret" {
-		t.Fatal("uma recusa mudou o token")
-	}
-	if code, body := postTo(t, a.postTechnitiumLogin, `{"user":"admin","pass":"certa"}`); code != 200 || !strings.Contains(body, `"warning":""`) {
-		t.Fatalf("HTTP %d %s", code, body)
-	}
-	if b, _ := os.ReadFile(a.cfg.DNS.TokenFile); strings.TrimSpace(string(b)) != "novo-token" {
-		t.Fatalf("token: %q", b)
-	}
-	for _, p := range []string{a.cfgPath, a.statePath, a.cfg.DNS.TokenFile} {
-		if b, _ := os.ReadFile(p); strings.Contains(string(b), "certa") {
-			t.Fatalf("a password ficou em %s", p)
-		}
-	}
-}
-
 // The Technitium's wildcard is what clients get (maybe the NPM's own IP); the
 // match keeps the IP the proxy hosts point to. And compose names its project
 // from the file, not from a -p the agent would make up.
@@ -367,17 +340,6 @@ func TestDiscoverDNSOnlyReports(t *testing.T) {
 		if strings.Contains(c, "config --format json") && strings.Contains(c, " -p ") {
 			t.Fatalf("o nome do projeto foi inventado: %s", c)
 		}
-	}
-}
-
-// A token that cannot touch the zone (a user without rights) is kept, with a warning.
-func TestTechnitiumLoginNoRights(t *testing.T) {
-	a, f := setup(t)
-	api := strings.TrimRight(a.cfg.DNS.APIURL, "/")
-	f.bodies = map[string][]byte{api + "/api/user/createToken?pass=p&tokenName=failover-agent&user=leitor": []byte(`{"status":"ok","token":"fraco"}`)}
-	f.badToken = "fraco"
-	if code, body := postTo(t, a.postTechnitiumLogin, `{"user":"leitor","pass":"p"}`); code != 200 || !strings.Contains(body, "não mexe na zona") {
-		t.Fatalf("HTTP %d %s", code, body)
 	}
 }
 

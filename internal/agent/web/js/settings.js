@@ -18,7 +18,7 @@ export const SECTIONS = [
     {k: 'start_timeout_min', l: 'Tempo para a cópia ficar pronta', u: 'min', n: 1, h: 'Depois disto sem responder, o failover dá erro.'},
     {k: 'npm.alert_after_min', l: 'Avisar do NPM em falha após', u: 'min', n: 0},
     {k: 'maintenance.default_expiry_min', l: 'Manutenção por defeito', u: 'min', n: 1}]},
-  {id: 'dns', title: 'DNS (Technitium)', fields: [
+  {id: 'dns', title: 'DNS (Technitium)', locked: true, fields: [
     {k: 'dns.api_url', l: 'URL da API'},
     {k: 'dns.zone', l: 'Zona'},
     {k: 'dns.ttl', l: 'TTL do registo', u: 's', n: 1}]},
@@ -63,7 +63,7 @@ export function interfaceExtra() {
   const c = st.cert || {}, run = st.ui_listen_running, saved = st.settings?.['ui.listen'];
   return kv([['Certificado', c.names?.length ? esc(c.names.join(', ')) : '—'],
       ['Válido até', c.not_after ? `${esc(day(c.not_after))}, renovado sozinho` : '—']])
-    + (run && saved && run !== saved ? `<div class="banner" style="--c:var(--warning)">${icon('restore')}<div>Gravado ${mono(saved)}, mas a interface ainda está em ${mono(run)}.
+    + (run && saved && run !== saved ? `<div class="banner" style="--c:var(--warning)">${icon('restore')}<div>Guardado ${mono(saved)}, mas a interface ainda está em ${mono(run)}.
         <button type="button" class="btn" data-restart>Reiniciar agora</button></div></div>` : '');
 }
 
@@ -75,17 +75,17 @@ export function sectionHtml(sec) {
       ${lock ? '<p class="note-text">Só com todos os serviços no servidor e o NPM do TNAS parado.</p>' : ''}
       ${sec.id === 'interface' ? interfaceExtra() : ''}
       <p class="bad-text sec-err" role="alert"></p>
-      <div class="form-foot">${sec.id === 'avisos' ? `<button type="button" class="btn" data-mail-test>${icon('email')}Enviar email de teste</button><span class="spacer"></span>` : ''}${sec.id === 'rede' ? `<button type="button" class="btn" data-detect title="Preenche com o que o agente encontrou; não grava">${icon('refresh')}Detetar</button><span class="spacer"></span>` : ''}
+      <div class="form-foot">${sec.id === 'avisos' ? `<button type="button" class="btn" data-mail-test>${icon('email')}Enviar email de teste</button><span class="spacer"></span>` : ''}${sec.id === 'rede' ? `<button type="button" class="btn" data-detect title="Preenche com o que o agente encontrou; não guarda">${icon('refresh')}Detetar</button><span class="spacer"></span>` : ''}
         <button type="button" class="btn" data-reset disabled>Repor</button>
         <button type="submit" class="btn contained" data-save disabled>Guardar</button></div>
       <ul class="checks">${secChecks[sec.id] || ''}</ul>
     </form>
-    ${sec.id === 'dns' ? `<div class="sec-sub"><p class="note-text">Entra com o utilizador do Technitium e o agente cria o seu token:</p>${techLoginHtml()}</div>
-    <div class="sec-sub">${kv([['Token', st.dns_token ? chip('Definido', 'var(--success)', 'xs') : chip('Em falta', 'var(--warning)', 'xs')]])}
+    ${sec.id === 'dns' ? `<div class="sec-sub">${kv([['Token', st.dns_token ? chip('Definido', 'var(--success)', 'xs') : chip('Em falta', 'var(--warning)', 'xs')]])}
       <form class="token-form"><label class="pw-field">${st.dns_token ? 'Substituir o token' : 'Token da API do Technitium'}
-          <input type="password" class="dns-token" autocomplete="off" required></label>
+          <input type="password" class="dns-token" autocomplete="off" required>
+          <small class="set-help">Cria-o no Technitium em Administração → Sessões → Criar token, para um utilizador com direitos na zona.</small></label>
         <p class="bad-text token-err" role="alert"></p>
-        <div class="form-foot"><button type="submit" class="btn contained">Testar e gravar</button></div></form></div>
+        <div class="form-foot"><button type="submit" class="btn contained">Testar e guardar</button></div></form></div>
     ${failoverAppHtml()}` : ''}`;
 }
 
@@ -184,39 +184,6 @@ export const discWaiting = what => discErr ? `<p class="bad-text">Não consegui 
 // the discovered service of a folder, if any
 export const discOf = dir => disc?.services.find(x => x.dir === dir);
 
-// The Technitium login: the agent makes its own token with it (the password
-// is passed on, never kept). In the guide and in Definições → DNS.
-export const techLoginHtml = () => `<form class="tech-login" autocomplete="on">
-    <div class="tl-row"><label class="pw-field">Utilizador do Technitium <input name="user" autocomplete="username" value="admin"></label>
-      <label class="pw-field">Password <input type="password" name="pass" autocomplete="current-password" required></label></div>
-    <p class="bad-text tl-err" role="alert"></p>
-    <div class="form-foot"><button type="submit" class="btn contained">${icon('key')}Ligar ao Technitium</button></div></form>`;
-document.addEventListener('submit', async e => {
-  const f = e.target.closest('.tech-login');
-  if (!f) return;
-  e.preventDefault();
-  const err = f.querySelector('.tl-err'), btn = f.querySelector('[type=submit]');
-  err.textContent = '';
-  btn.disabled = true;
-  try {
-    const r = toLogin(await fetch('api/technitium/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({user: f.elements.user.value, pass: f.elements.pass.value})}));
-    if (!r.ok) throw new Error((await readErr(r)).error);
-    const {warning} = await r.json().catch(() => ({}));
-    f.elements.pass.value = '';
-    document.activeElement?.blur();
-    toast('Ligado ao Technitium: o agente tem o seu token');
-    if (warning) toast(cap(warning), false);
-    forgetDiscovery();
-    await refresh();
-    repaintSetup();
-  } catch (x) {
-    err.textContent = sentence(x.message);
-  } finally {
-    btn.disabled = false;
-  }
-});
-
 // The network settings the discovery finds: its key, the setting's key.
 export const NET_KEYS = [['router_ip', 'router_ip'], ['tnas_ip', 'tnas_ip'], ['lan_iface', 'lan_iface'],
   ['server_ip', 'server.ip'], ['npm_check_host', 'server.npm_check_host']];
@@ -275,7 +242,7 @@ document.addEventListener('click', async e => {
   }
   const test = e.target.closest('[data-mail-test]');
   if (test) {
-    if (test.closest('form[data-dirty]')) { toast('Grava primeiro: o teste usa o que está gravado', false); return; }
+    if (test.closest('form[data-dirty]')) { toast('Guarda primeiro: o teste usa o que está guardado', false); return; }
     test.disabled = true;
     try {
       const r = toLogin(await fetch('api/email/test', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}));
@@ -291,7 +258,7 @@ document.addEventListener('click', async e => {
   const det = e.target.closest('[data-detect]');
   if (det) detectInto(det.closest('form.set-form'));
   if (e.target.closest('[data-failover-app]')) {
-    if (!await confirmAction(`Configurar o *.${st.dns_zone} no Technitium?`, `Instala a app Failover em cada Technitium que responda e grava o *.${st.dns_zone} como registo da app: o servidor ${st.server_ip} enquanto o NPM dele responder na porta 443, o TNAS ${st.tnas_ip} quando não. Um registo A no * sai a seguir.`, 'Configurar')) return;
+    if (!await confirmAction(`Configurar o *.${st.dns_zone} no Technitium?`, `Instala a app Failover em cada Technitium que responda e guarda o *.${st.dns_zone} como registo da app: o servidor ${st.server_ip} enquanto o NPM dele responder na porta 443, o TNAS ${st.tnas_ip} quando não. Um registo A no * sai a seguir.`, 'Configurar')) return;
     await post('api/technitium/failover', {}, `*.${st.dns_zone} configurado no Technitium`, 'failoverApp');
     painted['set-dns'] = null;
     renderSettings();
@@ -306,7 +273,7 @@ export async function detectInto(form) {
     if (el && d.network[dk] && el.value !== d.network[dk]) { el.value = d.network[dk]; n++; }
   }
   markSection(form);
-  toast(n ? `${plural(n, 'valor detetado', 'valores detetados')}: revê e grava` : 'Nada de novo: os valores são os detetados');
+  toast(n ? `${plural(n, 'valor detetado', 'valores detetados')}: revê e guarda` : 'Nada de novo: os valores são os detetados');
 }
 // A section's form: dirty when a field differs from what the agent has.
 export function formDirty(form) {
@@ -419,9 +386,11 @@ document.addEventListener('submit', async e => {
     const r = toLogin(await fetch('api/dns', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({token: input.value})}));
     if (!r.ok) throw new Error((await readErr(r)).error);
+    const {warning} = await r.json().catch(() => ({}));
     input.value = '';
     input.blur();
-    toast('Token testado e gravado');
+    toast('Token testado e guardado');
+    if (warning) toast(cap(warning), false);
     refresh();
   } catch (x) {
     err.textContent = sentence(x.message);

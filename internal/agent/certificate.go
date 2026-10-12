@@ -163,7 +163,7 @@ func (a *Agent) TLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("certificado da interface: %w", err)
 	}
 	a.certs.Store(s)
-	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: s.get}, nil
+	return &tls.Config{MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}, GetCertificate: s.get}, nil
 }
 
 // CertInfo is what the certificate names and when it ends, for the settings page.

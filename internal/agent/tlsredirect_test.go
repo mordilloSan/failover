@@ -100,3 +100,33 @@ func TestRedirectListenerTemporaryError(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 }
+
+// The UI negotiates HTTP/2: one connection carries the page's many small files.
+func TestUIServesHTTP2(t *testing.T) {
+	a, _ := setup(t)
+	cfg, err := a.TLSConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }),
+		TLSConfig: cfg, ReadHeaderTimeout: time.Second}
+	go func() { _ = srv.Serve(NewRedirectListener(ln, cfg)) }()
+	defer srv.Close()
+	pem, _ := os.ReadFile(CertFile(a.statePath))
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(pem)
+	cl := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{ForceAttemptHTTP2: true,
+		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
+	resp, err := cl.Get("https://" + ln.Addr().String() + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.ProtoMajor != 2 {
+		t.Fatalf("a interface fala %s", resp.Proto)
+	}
+}
