@@ -1,5 +1,5 @@
 // The overview: the servers, the topology, its wires and telemetry, and the service pills.
-import {$, EASE, ago, bytes, chip, clock, day, dur, esc, fine, icon, look, minsSince, mono, paint, painted, pending, plural, reduceMotion, sentence, st, svcIcon} from './core.js';
+import {$, EASE, ago, bytes, chip, clock, clockS, day, dur, esc, fine, icon, look, minsSince, mono, paint, painted, pending, plural, reduceMotion, sentence, st, svcIcon} from './core.js';
 
 // What the card says under the name: the one thing worth knowing about the service now.
 export function describe(s) {
@@ -135,7 +135,7 @@ export const beatH = x => x.s === 'down' ? 100 : x.s === 'up' ? Math.round(25 + 
 export function beatsHtml(name, n = 40) {
   const b = ((st.beats || {})[name] || []).slice(-n);
   const isNew = b.length && lastBeat[name] !== b[b.length - 1].t;
-  const tip = x => `${new Date(x.t).toLocaleTimeString('pt-PT')}: ${x.s === 'up' ? `${x.ms} ms` : x.s === 'down' ? 'em falha' : 'não verificado'}`;
+  const tip = x => `${clockS(x.t)}: ${x.s === 'up' ? `${x.ms} ms` : x.s === 'down' ? 'em falha' : 'não verificado'}`;
   return '<i class="beat" style="--h:15%"></i>'.repeat(Math.max(0, n - b.length))
     + b.map((x, i) => `<i class="beat ${x.s}${x.s === 'up' && x.ms >= 1000 ? ' slow' : ''}${isNew && i === b.length - 1 ? ' new' : ''}" style="--h:${beatH(x)}%" title="${esc(tip(x))}"></i>`).join('');
 }
@@ -161,15 +161,16 @@ export function fillBeats() {
 export const beatsBlock = name => `<div class="beats" data-beats="${esc(name)}" role="img" aria-label="Últimas verificações"></div>
   <div class="beats-foot" data-beats-foot="${esc(name)}"></div>`;
 
-// Each box's NPM: a dot and the word, the colour says the state and the title what it is.
-export const npmDot = (c, why, busy = false) => `<span title="${esc(why)}">${chip('NPM', c, `quiet${busy ? ' busy' : ''}`)}</span>`;
-export const serverChip = () => st.server_npm_ok ? npmDot('var(--success)', 'NPM do servidor a responder')
-  : npmDot(st.npm_alerted ? 'var(--warning)' : 'var(--error)', st.npm_alerted ? 'NPM do servidor em falha, com o servidor vivo' : `NPM do servidor sem resposta ${ago(st.npm_fail_since)}`);
+// Each box's NPM: a dot and what it is doing, the colour says the state again and the title says why.
+export const npmDot = (label, c, why, busy = false) => `<span title="${esc(why)}">${chip(label, c, `quiet${busy ? ' busy' : ''}`)}</span>`;
+export const serverChip = () => st.server_npm_ok ? npmDot('NPM a responder', 'var(--success)', 'NPM do servidor a responder')
+  : st.npm_alerted ? npmDot('NPM em falha', 'var(--warning)', 'NPM do servidor em falha, com o servidor vivo')
+  : npmDot('NPM sem resposta', 'var(--error)', `NPM do servidor sem resposta ${ago(st.npm_fail_since)}`);
 export const tnasChip = () => {
   const n = st.tnas_npm;
-  return !n.snapshot && !n.stand_in ? npmDot('var(--neutral)', 'NPM do TNAS em espera: arranca com o primeiro failover ou com o NPM do servidor em falha')
-    : n.ok ? npmDot('var(--info)', n.stand_in ? 'NPM do TNAS a servir: o NPM do servidor não responde' : 'NPM do TNAS a servir')
-    : npmDot('var(--warning)', n.msg || 'NPM do TNAS a arrancar', true);
+  return !n.snapshot && !n.stand_in ? npmDot('NPM parado', 'var(--neutral)', 'NPM do TNAS em espera: arranca com o primeiro failover ou com o NPM do servidor em falha')
+    : n.ok ? npmDot('NPM a servir', 'var(--info)', n.stand_in ? 'NPM do TNAS a servir: o NPM do servidor não responde' : 'NPM do TNAS a servir')
+    : npmDot('NPM a arrancar', 'var(--warning)', n.msg || 'NPM do TNAS a arrancar', true);
 };
 
 // Machine state for the node icons. The agent runs on the TNAS, so the page
@@ -276,7 +277,7 @@ export function renderHud() {
 export function renderWires() {
   if ($('page-overview').hidden) return;
   const svg = $('wires'), topo = $('topo');
-  if (getComputedStyle(svg).display === 'none') return;
+  if (getComputedStyle(svg).display === 'none') { if ($('wireFx').childElementCount) stopWires(svg); return; }
   const box = topo.getBoundingClientRect();
   const r = id => { const b = $(id).getBoundingClientRect(); return {x: b.left - box.left, y: b.top - box.top, w: b.width, h: b.height}; };
   const c = r('clients'), s = r('nodeServer'), t = r('nodeTnas');
@@ -305,8 +306,17 @@ export function renderWires() {
 // dash or <animateMotion> is repainted on the CPU every frame). The animations
 // run on the page's clock, so a redraw keeps them where they were.
 const DASH = 6, PERIOD = 14; // as the SVG's stroke-dasharray: 6 8
+// the dashes and packets are thrown away with their animations: an animation of a detached
+// element still runs, on the main thread, until the page is reloaded
+function stopWires(svg) {
+  const fx = $('wireFx');
+  fx.getAnimations({subtree: true}).forEach(a => a.cancel());
+  fx.replaceChildren();
+  svg.__html = null;
+}
 function wireMotion(svg) {
   const fx = $('wireFx');
+  fx.getAnimations({subtree: true}).forEach(a => a.cancel());
   fx.replaceChildren();
   svg.classList.toggle('gpu', !reduceMotion.matches);
   if (reduceMotion.matches) return; // the dashes stay still, on the SVG
@@ -348,7 +358,8 @@ export function probePulse() {
   lastTick = tick;
   if (first || reduceMotion.matches || !st.router_ok) return;
   const radar = document.querySelector('#nodeTnas .radar i');
-  if (radar) { radar.style.animation = 'none'; void radar.offsetWidth; radar.style.animation = ''; }
+  const an = radar?.getAnimations()[0];
+  if (an) an.currentTime = 0;
   const lane = $('lane');
   const color = st.server_npm_ok ? 'var(--success)' : 'var(--error)';
   const dot = document.createElement('span');
@@ -357,8 +368,15 @@ export function probePulse() {
   lane.append(dot);
   const len = lane.clientHeight;
   const at = p => `translate(-50%, ${p}px)`;
-  const ripple = el => el?.animate([{boxShadow: `0 0 0 0 color-mix(in srgb, ${color}, transparent 30%)`}, {boxShadow: '0 0 0 12px transparent'}],
-    {duration: 700, easing: 'ease-out'});
+  // the ring is a layer with a fixed shadow: only transform and opacity change
+  const ripple = el => {
+    if (!el) return;
+    const r = document.createElement('span');
+    r.className = 'ripple';
+    r.style.setProperty('--pc', color);
+    el.append(r);
+    r.animate([{transform: 'scale(1)', opacity: 1}, {transform: 'scale(1.6)', opacity: 0}], {duration: 700, easing: 'ease-out'}).onfinish = () => r.remove();
+  };
   ripple(document.querySelector('#nodeTnas .node-icon'));
   dot.animate([{transform: at(len), opacity: 0}, {opacity: 1, offset: .15}, {opacity: 1, offset: .85}, {transform: at(0), opacity: 0}],
     {duration: 1100, easing: 'cubic-bezier(.45, 0, .55, 1)'}).onfinish = () => {
@@ -369,7 +387,7 @@ export function probePulse() {
 
 export function renderGlobal() {
   const rel = /^v\d/.test(st.version) ? `/releases/tag/${encodeURIComponent(st.version)}` : ''; // a dev build has no release
-  $('version').textContent = st.version;
+  if ($('version').textContent !== st.version) $('version').textContent = st.version;
   $('version').href = `https://github.com/mordilloSan/failover${rel}`;
   const m = $('maintBtn'), busy = pending.has('maint:'), on = busy ? pending.get('maint:') : !!st.maint_until;
   const label = busy ? 'A aplicar…' : on ? `Manutenção do servidor até ${clock(st.maint_until)}. Carrega para desligar` : 'Manutenção do servidor';
@@ -384,7 +402,7 @@ export function renderGlobal() {
     : st.maint_until ? `Manutenção do servidor até ${clock(st.maint_until)}. Nenhum failover começa; os regressos continuam.` : '';
   $('banner').hidden = !banner;
   $('banner').style.setProperty('--c', st.router_ok ? 'var(--warning)' : 'var(--error)');
-  $('bannerText').textContent = banner;
+  if ($('bannerText').textContent !== banner) $('bannerText').textContent = banner; // a role=alert is announced again when rewritten
   $('setupBanner').hidden = !st.setup_pending;
   const mn = st.mirror_new || [];
   $('mirrorBanner').hidden = !mn.length;

@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -71,9 +72,11 @@ func (s asset) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeBody(w, r, s.ctype, s.raw, s.gz)
 }
 
-func gzipBytes(b []byte) []byte {
+func gzipBytes(b []byte) []byte { return gzipLevel(b, gzip.BestCompression) }
+
+func gzipLevel(b []byte, level int) []byte {
 	var buf bytes.Buffer
-	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	zw, _ := gzip.NewWriterLevel(&buf, level)
 	_, _ = zw.Write(b)
 	_ = zw.Close()
 	return buf.Bytes()
@@ -96,6 +99,17 @@ func writeBody(w http.ResponseWriter, r *http.Request, ctype string, raw, gz []b
 //go:embed web/inter.woff2
 var interFont []byte
 
+// loginScriptHash lets the login page's one inline script run under the CSP.
+var loginScriptHash = func() string {
+	i, j := bytes.Index(loginHTML, []byte("<script>"))+len("<script>"), bytes.LastIndex(loginHTML, []byte("</script>"))
+	h := sha256.Sum256(loginHTML[i:j])
+	return "'sha256-" + base64.StdEncoding.EncodeToString(h[:]) + "'"
+}()
+
+// connect-src https: is the settings page's check of the new port's /healthz;
+// img-src data: the login's favicon; style-src 'unsafe-inline' the style="--c:…" and the login's <style>.
+var csp = "default-src 'self'; script-src 'self' " + loginScriptHash + "; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https:; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+
 func (a *Agent) Handler() http.Handler {
 	mux := http.NewServeMux() // everything here needs a session
 	for p, s := range assets {
@@ -110,7 +124,7 @@ func (a *Agent) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(a.eventsSnapshot())
-		writeBody(w, r, "application/json", b, gzipBytes(b))
+		writeBody(w, r, "application/json", b, gzipLevel(b, gzip.DefaultCompression)) // sent on every poll: level 9 costs CPU for a few bytes
 	})
 	mux.HandleFunc("POST /api/config", a.postConfig)
 	mux.HandleFunc("POST /api/config/section", a.postSection)
@@ -120,7 +134,6 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /api/setup/done", a.postSetupDone)
 	mux.HandleFunc("GET /api/mirror", a.getMirror)
 	mux.HandleFunc("GET /api/discover", a.getDiscover)
-	mux.HandleFunc("POST /api/technitium/login", a.postTechnitiumLogin)
 	mux.HandleFunc("POST /api/technitium/failover", a.postFailoverApp)
 	mux.HandleFunc("GET /icons/{name}", a.getIcon)
 	mux.HandleFunc("GET /api/service/override", a.getServiceOverride)
@@ -172,6 +185,8 @@ func (a *Agent) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", csp) // /icons/ sets its own, stricter, over this
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		root.ServeHTTP(w, r)
 	})
@@ -447,8 +462,9 @@ func (a *Agent) postPassword(w http.ResponseWriter, r *http.Request) {
 	a.done(w, "", "password da interface alterada")
 }
 
-// postDNS replaces the Technitium token. It is tested first, so a wrong one
-// is found here and not in the middle of a failover.
+// postDNS replaces the Technitium token. The token is checked with a call that
+// needs no zone (the zone may not be known yet); one that cannot touch the zone
+// is kept, with a warning.
 func (a *Agent) postDNS(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Token string `json:"token"`
@@ -464,10 +480,16 @@ func (a *Agent) postDNS(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	d := a.cfg.DNS
 	a.mu.Unlock()
-	// outside the lock: the Technitium may take seconds to answer
-	if err := testToken(a.sys, d.APIURL, d.Zone, tok); err != nil {
+	// outside the lock: the Technitium may take seconds to answer. The zone may
+	// not be known yet (a new install): a token that is valid but cannot read it
+	// is kept, with a warning.
+	if err := technitiumJSON(a.sys, d.APIURL, "zones/list", nil, tok, nil); err != nil {
 		http.Error(w, "o Technitium recusou o token: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	warning := ""
+	if err := testToken(a.sys, d.APIURL, d.Zone, tok); err != nil {
+		warning = "o token foi guardado, mas não mexe na zona " + d.Zone + ": " + err.Error()
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -476,7 +498,10 @@ func (a *Agent) postDNS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.now = time.Now()
-	a.done(w, "", "token do Technitium alterado")
+	a.event("", "token do Technitium alterado (interface)")
+	a.save()
+	a.poke()
+	writeJSON(w, http.StatusOK, map[string]string{"warning": warning})
 }
 
 // The address the UI is on, kept next to the state: after a new ui.listen is

@@ -105,22 +105,7 @@ func (a *Agent) apiSummary(n netView, d dnsView, notAfter time.Time) []byte {
 			errs++
 		}
 	}
-	var present, total int
-	var size int64
-	seen := map[string]bool{}
-	for _, stk := range a.st.Images {
-		for _, im := range stk.Images {
-			if seen[im.Ref] {
-				continue
-			}
-			seen[im.Ref] = true
-			total++
-			if im.Present {
-				present++
-				size += im.Size
-			}
-		}
-	}
+	present, total, size := countImages(a.st.Images)
 	var last *Event
 	a.evMu.Lock()
 	if len(a.events) > 0 {

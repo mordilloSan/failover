@@ -23,12 +23,19 @@ const (
 	sessionTTL    = 30 * time.Minute // renewed on every request; the page logs out by itself after 30 min without input
 )
 
+// loginSlots caps the bcrypt checks of the open endpoints running at once:
+// without it a flood of logins saturates the CPU and the watchdog restarts the agent.
+var loginSlots = make(chan struct{}, 2)
+
 var loginDelay = time.Second // after a wrong login, to slow down guessing; tests set it to 0
 
 // sessions are kept in memory: a restart of the agent asks for the login again.
 type sessions struct {
 	mu sync.Mutex
 	m  map[string]time.Time // token → expiry
+
+	fails       int       // wrong logins in a row
+	lockedUntil time.Time // no login before this, after 5 wrong ones
 }
 
 func (s *sessions) create() string {
@@ -46,6 +53,33 @@ func (s *sessions) create() string {
 	}
 	s.m[tok] = now.Add(sessionTTL)
 	return tok
+}
+
+// locked says whether logins are refused: after 5 wrong ones in a row, for a minute.
+func (s *sessions) locked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Now().Before(s.lockedUntil)
+}
+
+// attempt records how a login ended: a right one starts the count again.
+func (s *sessions) attempt(ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ok {
+		s.fails = 0
+	} else if s.fails++; s.fails >= 5 {
+		s.lockedUntil, s.fails = time.Now().Add(time.Minute), 0
+	}
+}
+
+// crossSite refuses a form posted from another site's page (a login or an account made from there).
+func crossSite(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		http.Error(w, "pedido de outro site", http.StatusForbidden)
+		return true
+	}
+	return false
 }
 
 func token(r *http.Request) string {
@@ -139,6 +173,9 @@ func (a *Agent) getLogin(w http.ResponseWriter, r *http.Request) {
 // postSetup makes the admin account on the first visit: a plain form post,
 // like the login, only while there is none and within setupWindow.
 func (a *Agent) postSetup(w http.ResponseWriter, r *http.Request) {
+	if crossSite(w, r) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	user, pw := strings.TrimSpace(r.PostFormValue("username")), r.PostFormValue("password")
 	fail := func(code string) { http.Redirect(w, r, "/login?erro="+code, http.StatusSeeOther) }
@@ -148,6 +185,9 @@ func (a *Agent) postSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	case time.Since(a.started) >= setupWindow:
 		fail("fora")
+		return
+	case a.setupCode == "" || subtle.ConstantTimeCompare([]byte(strings.ToUpper(strings.TrimSpace(r.PostFormValue("code")))), []byte(a.setupCode)) != 1:
+		fail("codigo")
 		return
 	case user == "" || strings.ContainsAny(user, " \t:"):
 		fail("utilizador")
@@ -162,7 +202,14 @@ func (a *Agent) postSetup(w http.ResponseWriter, r *http.Request) {
 		fail("diferentes")
 		return
 	}
+	select {
+	case loginSlots <- struct{}{}:
+	default:
+		fail("ocupado")
+		return
+	}
 	c, err := newCreds(user, pw)
+	<-loginSlots
 	if err != nil {
 		fail("erro")
 		return
@@ -188,6 +235,9 @@ func (a *Agent) postSetup(w http.ResponseWriter, r *http.Request) {
 // postLogin takes a plain form post, the kind password managers recognise
 // both to fill in and to offer saving.
 func (a *Agent) postLogin(w http.ResponseWriter, r *http.Request) {
+	if crossSite(w, r) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
 	user, pw := r.PostFormValue("username"), r.PostFormValue("password")
 	c := a.creds.Load()
@@ -195,9 +245,21 @@ func (a *Agent) postLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	if a.sessions.locked() {
+		http.Redirect(w, r, "/login?erro=bloqueado", http.StatusSeeOther)
+		return
+	}
+	select {
+	case loginSlots <- struct{}{}:
+	default:
+		http.Redirect(w, r, "/login?erro=ocupado", http.StatusSeeOther)
+		return
+	}
 	// both are always checked, so the time taken does not tell which one was wrong
 	userOK := subtle.ConstantTimeCompare([]byte(user), []byte(c.User)) == 1
 	pwOK := bcrypt.CompareHashAndPassword([]byte(c.PasswordHash), []byte(pw)) == nil
+	<-loginSlots
+	a.sessions.attempt(userOK && pwOK)
 	if !userOK || !pwOK {
 		time.Sleep(loginDelay)
 		http.Redirect(w, r, "/login?erro=1", http.StatusSeeOther)

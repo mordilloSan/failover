@@ -70,7 +70,7 @@ if [[ $cmd == test ]]; then
 fi
 mkdir -p "$W"
 
-docker build -q -t "$image" -f "$here/deploy/Dockerfile" "$here" >/dev/null
+docker build --pull -q -t "$image" -f "$here/deploy/Dockerfile" "$here" >/dev/null
 docker network create --subnet 10.123.1.0/24 e2e-srv >/dev/null
 # a fixed bridge name, so the agent can arping on it (lan_iface)
 docker network create --subnet 10.123.2.0/24 -o com.docker.network.bridge.name=br-e2e-tnas e2e-tnas >/dev/null
@@ -235,7 +235,8 @@ EOF
 fi
 
 # the first access makes the account
-curl -sfk -o /dev/null -d username=admin -d "password=$pw" -d "password2=$pw" "$ui/setup"
+code=$(docker logs e2e-agent 2>&1 | sed -n 's/.*code=\([A-Z0-9]*\).*/\1/p' | tail -1)
+curl -sfk -o /dev/null -d "code=$code" -d username=admin -d "password=$pw" -d "password2=$pw" "$ui/setup"
 login || {
 	echo "FALHOU: a conta feita no primeiro acesso não entra"
 	exit 1

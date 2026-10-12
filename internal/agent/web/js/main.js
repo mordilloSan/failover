@@ -11,17 +11,22 @@ import './dnd.js'; // dragging a service between the boxes: it listens on its ow
 export function renderAll() { renderGlobal(); renderTopology(); renderEvents(); renderSettings(); renderSetup(); renderPanel(); }
 
 export let pageVersion = '';
-export async function refresh() {
+let lastBody = '', lastRender = 0;
+export async function refresh(force = false) {
   try {
     const r = toLogin(await fetch('api/status', {cache: 'no-store'}));
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const first = !st;
-    setStatus(await r.json());
+    const first = !st, body = await r.text();
+    setLastOk(Date.now());
+    // the same body as the last poll: nothing to redraw, except the relative times once a minute
+    if (!force && !first && body === lastBody && Date.now() - lastRender < 60000) { tickLive(); return; }
+    lastBody = body;
+    setStatus(JSON.parse(body));
     // the agent was updated: this page is its old one, load the new
     if (pageVersion && st.version !== pageVersion) { location.reload(); return; }
     pageVersion = st.version;
-    setLastOk(Date.now());
     renderAll();
+    lastRender = Date.now();
     if (first) {
       if (st.setup_pending && !location.hash) location.hash = '#/assistente'; // a new install starts with the guide
       route();

@@ -171,6 +171,13 @@ func (a *Agent) alertFor(svc, msg string, onTNAS time.Duration) {
 	}
 }
 
+// mail queues msg for the email of this check without an event: the event was logged already.
+func (a *Agent) mail(svc, msg string) {
+	if a.cfg.Email.on() {
+		a.alerts = append(a.alerts, alertItem{a.now, svc, msg, 0})
+	}
+}
+
 // The alerts an email's subject tells as one story.
 const (
 	msgFailover = "em failover no TNAS"

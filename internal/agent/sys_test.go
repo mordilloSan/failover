@@ -30,6 +30,10 @@ func TestCheckResolve(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		case "redirect.engmariz.com":
 			http.Redirect(w, r, "https://elsewhere.invalid/", http.StatusFound)
+		case "notfound.engmariz.com":
+			w.WriteHeader(http.StatusNotFound)
+		case "unavailable.engmariz.com":
+			w.WriteHeader(http.StatusServiceUnavailable)
 		default:
 			w.WriteHeader(http.StatusBadGateway)
 		}
@@ -47,6 +51,12 @@ func TestCheckResolve(t *testing.T) {
 	}
 	if err := s.Check("bitwarden.engmariz.com:"+port, "127.0.0.1"); err == nil || err.Error() != "HTTP 502" {
 		t.Errorf("502 tem de falhar: %v", err)
+	}
+	if err := s.Check("notfound.engmariz.com:"+port, "127.0.0.1"); err != nil {
+		t.Errorf("um 404 é o serviço a responder: %v", err)
+	}
+	if err := s.Check("unavailable.engmariz.com:"+port, "127.0.0.1"); err == nil || err.Error() != "HTTP 503" {
+		t.Errorf("503 tem de falhar: %v", err)
 	}
 	var ce *CertError
 	if err := s.Check("outro.test:"+port, "127.0.0.1"); !errors.As(err, &ce) {

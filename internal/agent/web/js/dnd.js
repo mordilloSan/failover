@@ -33,15 +33,14 @@ export function startGhost(x, y) {
   Object.assign(g.style, {left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`});
   document.body.append(g);
   drag.p.classList.add('dragging');
-  Object.assign(drag, {ghost: g, dx: drag.x - r.left, dy: drag.y - r.top, home: r,
+  Object.assign(drag, {ghost: g, home: r,
     act: drag.from === 'server' ? 'failover' : 'return', to: $(drag.from === 'server' ? 'nodeTnas' : 'nodeServer')});
   drag.ok = drag.act === 'failover' ? canFail(drag.s) : canReturn(drag.s);
   drag.to.classList.toggle('drop-ok', drag.ok);
   moveGhost(x, y);
 }
 export function moveGhost(x, y) {
-  drag.ghost.style.left = `${x - drag.dx}px`;
-  drag.ghost.style.top = `${y - drag.dy}px`;
+  drag.ghost.style.transform = `translate(${x - drag.x}px, ${y - drag.y}px) rotate(-2deg)`; // placed once at the pill: moving left/top lays out every frame
   const t = drag.to.getBoundingClientRect();
   drag.over = x >= t.left && x <= t.right && y >= t.top && y <= t.bottom;
   drag.to.classList.toggle('over', drag.over && drag.ok);
@@ -69,7 +68,7 @@ export const endDrag = async e => {
   dragClick = true; // a click right after is the drop, not a request for the panel
   setTimeout(() => { dragClick = false; }, 0);
   d.to.classList.remove('drop-ok', 'over');
-  const settle = r => d.ghost.animate([{left: d.ghost.style.left, top: d.ghost.style.top, opacity: 1}, {left: `${r.left}px`, top: `${r.top}px`, opacity: .2}],
+  const settle = r => d.ghost.animate([{transform: d.ghost.style.transform, opacity: 1}, {transform: `translate(${r.left - d.home.left}px, ${r.top - d.home.top}px) rotate(-2deg)`, opacity: .2}],
     {duration: reduceMotion.matches ? 0 : 260, easing: EASE}).finished.then(() => d.ghost.remove());
   const back = () => { settle(d.home); document.querySelector(`.node .pill[data-svc="${CSS.escape(d.s.name)}"]`)?.classList.remove('dragging'); };
   if (!d.over || e.type !== 'pointerup') { back(); return; }

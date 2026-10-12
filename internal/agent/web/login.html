@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt">
+<html lang="pt-PT">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -21,7 +21,7 @@
   --well: rgba(0, 0, 0, .2); --well-hi: rgba(0, 0, 0, .28);
   --shadow: 0 30px 60px -30px rgba(0, 0, 0, .75), 0 0 0 1px rgba(255, 255, 255, .06);
   --text: rgba(255, 255, 255, .95); --muted: rgba(255, 255, 255, .56); --divider: rgba(255, 255, 255, .12);
-  --primary: #407ad6; --primary-hi: #6395e0; --primary-dark: #2f65cb; --glow: rgba(64, 122, 214, .35); --error: #f54b3f;
+  --primary: #407ad6; --primary-hi: #6395e0; --primary-dark: #2f65cb; --glow: rgba(64, 122, 214, .35); --error: #f54b3f; --error-text: #ff9b94;
 }
 @media (prefers-color-scheme: light) {
   :root { color-scheme: light; --bg: #f2f5fa; --bg-deep: #e6ecf5; --dot: rgba(15, 30, 60, .08);
@@ -29,7 +29,7 @@
     --well: rgba(0, 0, 0, .035); --well-hi: rgba(0, 0, 0, .055);
     --shadow: 0 24px 50px -28px rgba(20, 40, 80, .45), 0 0 0 1px rgba(0, 0, 0, .06);
     --text: rgba(15, 15, 15, .95); --muted: rgba(15, 15, 15, .6); --divider: rgba(0, 0, 0, .12);
-    --primary: #376fd0; --primary-hi: #5a8ee0; --primary-dark: #2052c2; --glow: rgba(55, 111, 208, .22); --error: #cf222e; }
+    --primary: #376fd0; --primary-hi: #5a8ee0; --primary-dark: #2052c2; --glow: rgba(55, 111, 208, .22); --error: #cf222e; --error-text: #cf222e; }
 }
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -66,7 +66,7 @@ label small { font-weight: 400; }
 .field > svg { position: absolute; left: 11px; width: 16px; height: 16px; fill: var(--muted); pointer-events: none; transition: fill .15s; }
 .field:focus-within > svg { fill: var(--primary-hi); }
 input { width: 100%; padding: 10px 12px 10px 36px; border-radius: 10px; border: 1px solid var(--divider); background: var(--well);
-  color: inherit; font: inherit; font-size: 14px; transition: border-color .15s, box-shadow .15s, background .15s; }
+  color: inherit; font: inherit; font-size: 16px; transition: border-color .15s, box-shadow .15s, background .15s; }
 input:hover { border-color: color-mix(in srgb, var(--text), transparent 65%); }
 input:focus { outline: none; border-color: var(--primary); background: var(--well-hi); box-shadow: 0 0 0 3px var(--glow); }
 .peek { position: absolute; right: 4px; display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px;
@@ -74,7 +74,7 @@ input:focus { outline: none; border-color: var(--primary); background: var(--wel
 .peek:hover { color: var(--text); background: var(--well-hi); }
 .peek svg { width: 18px; height: 18px; fill: currentColor; }
 .field:has(.peek) input { padding-right: 40px; }
-.err { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; padding: 9px 11px; border-radius: 10px; color: var(--error);
+.err { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; padding: 9px 11px; border-radius: 10px; color: var(--error-text);
   background: color-mix(in srgb, var(--error) 12%, transparent); border: 1px solid color-mix(in srgb, var(--error) 30%, transparent); }
 .err svg { width: 16px; height: 16px; fill: currentColor; flex: none; margin-top: 1px; }
 .shake { animation: shake .4s cubic-bezier(.36, .07, .19, .97); }
@@ -132,6 +132,9 @@ code { font: 500 11.5px var(--mono); padding: 1px 5px; border-radius: 5px; backg
   <div class="head"><span class="logo" aria-hidden="true"><svg><use href="#i-swap"/></svg></span>
     <div><h1>Criar a conta de administrador</h1><p class="sub">É a primeira vez que abres o failover.</p></div></div>
   <div data-topo></div>
+  <label for="s-code">Código do arranque <small>(em <code>docker logs failover-agent</code>)</small></label>
+  <div class="field"><svg><use href="#i-lock"/></svg>
+    <input id="s-code" name="code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" required></div>
   <label for="s-username">Utilizador</label>
   <div class="field"><svg><use href="#i-user"/></svg>
     <input id="s-username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
@@ -157,6 +160,8 @@ const $ = id => document.getElementById(id);
 const mode = document.body.dataset.setup, erro = new URLSearchParams(location.search).get('erro');
 const why = {curta: 'A password tem de ter pelo menos 8 caracteres.', longa: 'A password pode ter até 72 caracteres.', diferentes: 'As duas passwords não são iguais.',
   utilizador: 'Escolhe um utilizador, sem espaços.', existe: 'A conta já foi criada: entra com ela.',
+  codigo: 'O código não está certo: está em docker logs failover-agent.',
+  bloqueado: 'Demasiadas tentativas falhadas: espera 1 minuto.', ocupado: 'O agente está a verificar outros logins: tenta outra vez.',
   fora: 'Já passaram 30 minutos desde o arranque: reinicia o agente para criar a conta.', erro: 'Não foi possível guardar a conta.'};
 document.querySelectorAll('[data-topo]').forEach(el => el.replaceWith($('topo').content.cloneNode(true)));
 const fail = (form, err) => {
@@ -167,7 +172,7 @@ const fail = (form, err) => {
 if (mode === 'open') {
   $('login').hidden = true;
   $('setup').hidden = false;
-  $('s-username').focus();
+  $('s-code').focus();
   if (erro && why[erro]) fail($('setup'), $('s-err'));
 } else if (mode === 'closed') {
   $('login').hidden = true;

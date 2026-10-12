@@ -119,7 +119,7 @@ func serve(ctx context.Context, cfgPath, statePath string) error {
 	if err != nil {
 		return fmt.Errorf("interface: %w", err)
 	}
-	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 	if srv.TLSConfig, err = a.TLSConfig(); err != nil {
 		_ = ln.Close()
 		return err

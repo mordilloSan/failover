@@ -18,9 +18,10 @@ server, and the services it moves between the server and the TNAS.
 ## By design
 
 The agent runs privileged, with the Docker socket and `/Volume1` mounted: it
-needs them to take Btrfs snapshots and start containers. Its UI is plain HTTP,
-meant for the LAN or WireGuard only. Neither is a vulnerability on its own. A
-way to reach them from outside that setup is.
+needs them to take Btrfs snapshots and start containers. Its UI is HTTPS with a
+self-signed certificate the agent renews, meant for the LAN or WireGuard only.
+Neither is a vulnerability on its own. A way to reach them from outside that
+setup is.
 
 ## Supported versions
 

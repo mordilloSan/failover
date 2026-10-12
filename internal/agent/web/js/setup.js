@@ -36,11 +36,10 @@ export function setupHtml(id) {
         `${where}<form class="su-form" data-su="paths" novalidate>${PATH_KEYS().map(fd => fieldHtml(fd)).join('')}</form>`);
     }
     case 'tech':
-      return suBlock(id, 3, 'Technitium', 'Num failover o agente aponta o nome do serviço para o TNAS. Entra com o utilizador do Technitium: o agente cria o seu próprio token e a password não fica guardada.',
-        `${st.dns_token ? `<p class="ok-text wiz-done" style="margin:0 0 8px">${icon('check')}O agente já tem um token. Para outro, entra outra vez.</p>` : ''}
-        <form class="su-form" data-su="tech" autocomplete="on"><div class="tl-row"><label class="pw-field">Utilizador do Technitium <input name="tuser" autocomplete="username" value="admin"></label>
-          <label class="pw-field">Password <input type="password" name="tpass" autocomplete="current-password"></label></div></form>
-        <p class="note-text">Em ${mono(st.settings['dns.api_url'])}. Outro endereço ou um token feito à mão: <a href="#/definicoes/dns">Definições → DNS</a>.</p>`);
+      return suBlock(id, 3, 'Technitium', 'Num failover o agente aponta o nome do serviço para o TNAS. Cria um token da API no Technitium (Administração → Sessões → Criar token, para um utilizador com direitos na zona) e cola-o aqui.',
+        `${st.dns_token ? `<p class="ok-text wiz-done" style="margin:0 0 8px">${icon('check')}O agente já tem um token. Para outro, cola outro.</p>` : ''}
+        <form class="su-form" data-su="tech"><label class="pw-field">Token da API do Technitium <input type="password" name="ttoken" autocomplete="off" spellcheck="false"></label></form>
+        <p class="note-text">O Technitium em ${mono(st.settings['dns.api_url'])}. Outro endereço: <a href="#/definicoes/dns">Definições → DNS</a>.</p>`);
     case 'mail': {
       const pre = mailPreset(), opt = (v, l) => `<option value="${v}" ${v === pre ? 'selected' : ''}>${l}</option>`;
       const f = (k, over = {}) => fieldHtml({...byKey(k), ...over});
@@ -104,17 +103,17 @@ export async function startSetup() {
   document.querySelectorAll('#page-setup .field-err').forEach(x => { x.textContent = ''; });
   try {
     // Technitium first: the zone comes with its token
-    const tpass = suForm('tech').elements.tpass;
-    if (tpass.value) {
+    const ttoken = suForm('tech').elements.ttoken;
+    if (ttoken.value.trim()) {
       try {
-        const r = await send('tech', 'api/technitium/login', {user: val('tech', 'tuser'), pass: tpass.value});
+        const r = await send('tech', 'api/dns', {token: ttoken.value});
         const {warning} = await r.json().catch(() => ({}));
-        tpass.value = '';
+        ttoken.value = '';
         forgetDiscovery();
-        res('tech', true, `Ligado: o agente tem o seu token${warning ? `; ${warning}` : ''}`);
+        res('tech', true, `Token testado e guardado${warning ? `; ${warning}` : ''}`);
       } catch (x) { res('tech', false, x.message); }
     } else {
-      res('tech', st.dns_token, st.dns_token ? 'O agente já tinha um token' : 'Falta a password: sem token o DNS não muda num failover');
+      res('tech', st.dns_token, st.dns_token ? 'O agente já tinha um token' : 'Falta o token: sem ele o DNS não muda num failover');
     }
 
     // the paths before the network: the server is found in the mirror
@@ -128,7 +127,7 @@ export async function startSetup() {
       }
       const r = toLogin(await fetch('api/config/check', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({section: 'caminhos'})}));
       const bad = r.ok ? (await r.json()).filter(c => !c.ok).map(c => c.msg) : [];
-      res('paths', !bad.length, bad.length ? bad.join('; ') : moved ? 'Caminhos gravados e confirmados' : 'Caminhos confirmados');
+      res('paths', !bad.length, bad.length ? bad.join('; ') : moved ? 'Caminhos guardados e confirmados' : 'Caminhos confirmados');
     } catch (x) { res('paths', false, x.message); }
 
     const rede = {};
@@ -137,7 +136,7 @@ export async function startSetup() {
     try {
       await send('rede', 'api/config/section', {section: 'rede', values: rede});
       if (zone && zone !== st.settings['dns.zone']) await send('rede', 'api/config/section', {section: 'dns', values: {'dns.zone': zone}});
-      res('rede', true, `Rede gravada${zone ? `, zona ${zone}` : ''}`);
+      res('rede', true, `Rede guardada${zone ? `, zona ${zone}` : ''}`);
     } catch (x) { res('rede', false, x.message); }
 
     const preset = suForm('mail').elements.preset.value, pw = suForm('mail').elements['email.password'];

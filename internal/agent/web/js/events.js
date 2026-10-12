@@ -1,5 +1,5 @@
 // The events list: loading, filtering and the CSV export.
-import {$, cap, esc, icon, norm, paint, painted, reduceMotion, st, toLogin, when} from './core.js';
+import {$, cap, clock, esc, icon, norm, paint, painted, reduceMotion, st, toLogin, when} from './core.js';
 import {currentTab, renderAll} from './main.js';
 
 export function evTone(m) {
@@ -36,7 +36,7 @@ export function mergeEvents() {
   if (!evAll) return;
   const known = new Set(evAll.map(evKey));
   const add = (st.events || []).filter(e => !known.has(evKey(e))).reverse();
-  if (add.length) evAll = [...add, ...evAll];
+  if (add.length) { evAll = [...add, ...evAll]; if (evAll.length > 5000) evAll.length = 5000; }
   // none of the status's events was known: more happened than it carries (a
   // laptop asleep, the agent unreachable), so fetch the whole list again
   if (evAll.length > add.length && add.length === (st.events || []).length && add.length >= 50) loadEvents(true);
@@ -44,12 +44,12 @@ export function mergeEvents() {
 // newest first, from whichever list is loaded
 export const eventsNow = () => evAll || [...(st.events || [])].reverse();
 
+const DM = new Intl.DateTimeFormat('pt-PT', {day: '2-digit', month: '2-digit'});
 export const evWhen = t => {
-  const d = new Date(t), today = new Date(), y = new Date(today - 864e5);
-  const hm = d.toLocaleTimeString('pt-PT', {hour: '2-digit', minute: '2-digit'});
+  const d = new Date(t), today = new Date(), y = new Date(today - 864e5), hm = clock(t);
   if (d.toDateString() === today.toDateString()) return `hoje ${hm}`;
   if (d.toDateString() === y.toDateString()) return `ontem ${hm}`;
-  return `${d.toLocaleDateString('pt-PT', {day: '2-digit', month: '2-digit'})} ${hm}`;
+  return `${DM.format(d)} ${hm}`;
 };
 
 export function renderEvents() {

@@ -6,9 +6,9 @@ import (
 	"cmp"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Discovery: what the TNAS can find out by itself, so the settings are
@@ -125,6 +124,7 @@ var (
 	reServer     = regexp.MustCompile(`^\s*set\s+\$server\s+"?([^";\s]+)"?\s*;`)
 	rePort       = regexp.MustCompile(`^\s*set\s+\$port\s+(\d+)\s*;`)
 	reDashes     = regexp.MustCompile(`-+`)
+	reNotSlug    = regexp.MustCompile(`[^a-z0-9_-]+`)
 )
 
 // readProxyHosts reads the NPM's proxy_host/*.conf; a file without a
@@ -217,12 +217,7 @@ func analyzeCompose(js []byte, lanIface string) (composeInfo, error) {
 	}
 	slices.Sort(info.macvlans)
 	slices.Sort(info.External)
-	keys := make([]string, 0, len(c.Services))
-	for k := range c.Services {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(c.Services)) {
 		info.addService(c.Name, k, c.Services[k])
 	}
 	slices.Sort(info.Images)
@@ -451,17 +446,8 @@ func assignHosts(hosts []proxyHost, infos []composeInfo, serverIP string) []assi
 // slugName is a service name from a folder's: lowercase, [a-z0-9_-] only,
 // starting with a letter or a number.
 func slugName(dir string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(dir) {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
-			b.WriteRune(r)
-		} else {
-			b.WriteRune('-')
-		}
-	}
-	s := reDashes.ReplaceAllString(b.String(), "-")
-	s = strings.TrimLeft(s, "-_")
-	return strings.TrimRight(s, "-")
+	s := reDashes.ReplaceAllString(reNotSlug.ReplaceAllString(strings.ToLower(dir), "-"), "-")
+	return strings.TrimRight(strings.TrimLeft(s, "-_"), "-")
 }
 
 // discovery is what GET /api/discover answers: proposals, never saved by it.
@@ -755,51 +741,4 @@ func technitiumJSON(sys System, apiURL, path string, q url.Values, token string,
 
 func (a *Agent) getDiscover(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, a.discover())
-}
-
-// postTechnitiumLogin makes the agent's API token with the Technitium's
-// login and keeps it; the password is only passed on, never kept.
-func (a *Agent) postTechnitiumLogin(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		User string `json:"user"`
-		Pass string `json:"pass"`
-	}
-	if !decode(w, r, &req) {
-		return
-	}
-	a.mu.Lock()
-	d := a.cfg.DNS
-	a.mu.Unlock()
-	var out struct {
-		Token    string `json:"token"`
-		Response struct {
-			Token string `json:"token"`
-		} `json:"response"`
-	}
-	err := technitiumJSON(a.sys, d.APIURL, "user/createToken", url.Values{"user": {req.User}, "pass": {req.Pass}, "tokenName": {"failover-agent"}}, "", &out)
-	tok := cmp.Or(out.Token, out.Response.Token)
-	if err == nil && tok == "" {
-		err = errors.New("o Technitium não deu um token")
-	}
-	if err != nil {
-		http.Error(w, "o Technitium recusou: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if err := writeAtomic(d.TokenFile, []byte(tok+"\n")); err != nil {
-		http.Error(w, "o token foi criado no Technitium mas não consegui guardá-lo: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.now = time.Now()
-	a.event("", "token do Technitium criado com o utilizador "+req.User+" (interface)")
-	a.save()
-	a.poke()
-	warning := ""
-	if d.Zone != "" { // a user without rights on the zone makes a token a failover cannot use
-		if err := testToken(a.sys, d.APIURL, d.Zone, tok); err != nil {
-			warning = "o token foi criado, mas não mexe na zona " + d.Zone + ": " + err.Error()
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"warning": warning})
 }

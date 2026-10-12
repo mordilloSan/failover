@@ -37,9 +37,15 @@ export const dur = m => {
   return `${Math.round(m / 1440)} dias`;
 };
 export const ago = t => t ? `há ${dur(minsSince(t))}` : '';
-export const clock = t => new Date(t).toLocaleTimeString('pt-PT', {hour: '2-digit', minute: '2-digit'});
-export const when = t => new Date(t).toLocaleString('pt-PT');
-export const day = t => new Date(t).toLocaleDateString('pt-PT');
+// one formatter each, made once: creating one per call costs more than the formatting
+const HM = new Intl.DateTimeFormat('pt-PT', {hour: '2-digit', minute: '2-digit'});
+const DMY = new Intl.DateTimeFormat('pt-PT', {day: '2-digit', month: '2-digit', year: 'numeric'});
+const FULL = new Intl.DateTimeFormat('pt-PT', {day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'});
+const HMS = new Intl.DateTimeFormat('pt-PT', {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+export const clock = t => HM.format(new Date(t));
+export const clockS = t => HMS.format(new Date(t));
+export const when = t => FULL.format(new Date(t));
+export const day = t => DMY.format(new Date(t));
 export const bytes = n => n >= 1e9 ? `${(n / 1e9).toLocaleString('pt-PT', {maximumFractionDigits: 1})} GB` : `${Math.max(1, Math.round(n / 1e6))} MB`;
 export const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 export const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
@@ -61,17 +67,31 @@ export const setLastOk = t => { lastOk = t; };
 export const pending = new Map();
 export const painted = {};
 // Only touch the DOM when the markup changed, so focus and hover survive the 5 s refresh.
-export const paint = (id, html) => { if (painted[id] !== html) { painted[id] = html; $(id).innerHTML = html; } };
+// a selector that finds the same control after a repaint: its id, else its tag and data-* attributes
+const focusKey = e => {
+  if (e.id) return `#${CSS.escape(e.id)}`;
+  const data = [...e.attributes].filter(a => a.name.startsWith('data-')).map(a => `[${a.name}="${CSS.escape(a.value)}"]`).join('');
+  return data && e.tagName.toLowerCase() + data; // a bare tag would focus the wrong element: restore nothing
+};
+export const paint = (id, html) => {
+  if (painted[id] === html) return;
+  painted[id] = html;
+  const el = $(id), ae = document.activeElement, key = el.contains(ae) ? focusKey(ae) : '';
+  el.innerHTML = html;
+  if (key) el.querySelector(key)?.focus({preventScroll: true});
+};
 
 document.querySelectorAll('[data-icon]').forEach(el => { el.innerHTML = icon(el.dataset.icon); });
 
 export function toast(msg, ok = true) {
   const el = document.createElement('div');
   el.className = 'toast';
+  el.setAttribute('role', ok ? 'status' : 'alert');
   el.style.setProperty('--c', ok ? 'var(--success)' : 'var(--error)');
-  el.innerHTML = `${icon(ok ? 'check' : 'alert')}<span>${esc(msg)}</span>`;
+  el.innerHTML = `${icon(ok ? 'check' : 'alert')}<span>${esc(msg)}</span>${ok ? '' : `<button type="button" class="icon-btn toast-close" aria-label="Fechar">${icon('close')}</button>`}`;
   $('toasts').append(el);
-  setTimeout(() => el.remove(), ok ? 4000 : 9000);
+  if (ok) setTimeout(() => el.remove(), 4000);
+  else el.querySelector('.toast-close').addEventListener('click', () => el.remove());
 }
 
 export async function post(path, body, done, key, value = true) {
@@ -87,7 +107,10 @@ export async function post(path, body, done, key, value = true) {
     toast(`Não foi possível: ${e.message}`, false);
   }
   pending.delete(key);
-  await refresh();
+  // refresh(true) forces a render too, but only if the fetch works: this one un-sticks the control
+  // when it fails (and shows the old state for the round trip)
+  renderAll();
+  await refresh(true);
   return ok;
 }
 
