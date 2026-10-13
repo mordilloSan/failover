@@ -65,6 +65,7 @@ export function imageList(name) {
   return `<ul class="list">${stack.images.map(i => `<li>
       <span class="${i.present ? 'ok-text' : 'bad-text'}">${icon(i.present ? 'check' : 'alert')}</span>
       <span class="grow mono" title="${esc(i.ref)}">${esc(i.ref)}</span>
+      ${i.no_pull ? `<span class="side" title="A descarga noturna não a traz nem a atualiza: ${esc(i.no_pull)}">${esc(i.no_pull)}</span>` : ''}
       ${i.present ? `<span class="side">${bytes(i.size)}</span><span class="side" title="Data da imagem">${day(i.created)}</span>`
         : '<span class="side bad-text">Em falta</span>'}</li>`).join('')}</ul>${notesHtml(stack.notes)}`;
 }

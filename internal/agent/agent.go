@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"go.yaml.in/yaml/v3"
@@ -184,6 +185,7 @@ func (c *Config) validateService(s Service, seen map[string]bool) error {
 		{!validName.MatchString(s.Name), "name", "só minúsculas, números, - e _, a começar por letra ou número"},
 		{seen[s.Name], "name", "já existe um serviço com este nome"},
 		{!isRel(s.Dir), "dir", "tem de ser uma pasta dentro do espelho"},
+		{s.Host == "", "host", "o nome que o NPM serve: sem ele o agente não consegue verificar o serviço"},
 		{!isName(s.Host), "host", "tem de ser um nome, sem https:// nem /"},
 		{s.WaitMin < 1, "wait_min", "tem de ser pelo menos 1"},
 		{s.StabilityMin < 0, "stability_min", "não pode ser negativa"},
@@ -487,8 +489,9 @@ func (a *Agent) Run(ctx context.Context) {
 	for first := true; ; first = false {
 		a.mu.Lock()
 		stale := time.Since(a.st.ImagesAt) > 24*time.Hour
+		pullSoon := a.pullNow && a.cfg.Nightly.PrepullAt != "" // the start pull scans after itself: one scan, with the images that came down
 		a.mu.Unlock()
-		if first || stale && !a.scanning.Load() { // at start, then after the nightly pull, and once a day at most without it
+		if (first || stale) && !pullSoon && !a.scanning.Load() { // at start, after every pull, and once a day at most without one
 			go a.scanImages()
 		}
 		a.Tick(time.Now())
@@ -1474,6 +1477,7 @@ func (c *Config) hasToken() bool {
 type Image struct {
 	Ref     string    `json:"ref"`
 	Present bool      `json:"present"`
+	NoPull  string    `json:"no_pull,omitempty"` // why the pull leaves it (built, pull_policy: never): it is only on the TNAS by hand
 	Size    int64     `json:"size,omitempty"`
 	Created time.Time `json:"created,omitzero"`
 }
@@ -1573,13 +1577,15 @@ func (a *Agent) scanStack(c Config, name, dir, override string, running bool) (s
 		return Stack{Err: err.Error()}, []string{name + " (compose ilegível)"}
 	}
 	for _, ref := range info.Images {
-		img := Image{Ref: ref}
+		img := Image{Ref: ref, NoPull: info.NoPull[ref]}
 		if out, err := a.sys.Output("docker", "image", "inspect", "--format", "{{.Size}} {{.Created}}", ref); err == nil {
 			img.Present = true
 			if f := strings.Fields(out); len(f) == 2 {
 				img.Size, _ = strconv.ParseInt(f[0], 10, 64)
 				img.Created, _ = time.Parse(time.RFC3339Nano, f[1])
 			}
+		} else if img.NoPull != "" {
+			missing = append(missing, ref+" ("+img.NoPull+", a descarga não a traz)")
 		} else {
 			missing = append(missing, ref)
 		}
@@ -1607,7 +1613,10 @@ func (a *Agent) tnasNotes(info composeInfo, running bool) []string {
 		if p.HostIP != "" {
 			shown = addr
 		}
-		if err := a.sys.PortFree(p.Proto, addr); err != nil {
+		switch err := a.sys.PortFree(p.Proto, addr); {
+		case errors.Is(err, syscall.EADDRNOTAVAIL): // published on the server's IP: the copy could never bind it
+			notes = append(notes, fmt.Sprintf("publica a porta %d no IP %s, que o TNAS não tem: a cópia não arrancaria", p.Port, p.HostIP))
+		case err != nil:
 			notes = append(notes, fmt.Sprintf("a porta %s/%s já está ocupada no TNAS", shown, p.Proto))
 		}
 	}
@@ -1645,34 +1654,101 @@ func (a *Agent) nightly() {
 	for _, sv := range a.cfg.Services {
 		jobs = append(jobs, slices.Concat([]string{"compose", "-p", "failover-" + sv.Name}, a.cfg.files(root, sv.Dir, sv.Override), []string{"pull", "-q"}))
 	}
-	go func() {
-		defer a.pulling.Store(false)
-		var failed []string
-		for _, j := range jobs {
-			err := a.sys.Run("docker", j...)
-			if err != nil { // a registry's rate limit (ghcr.io's "retry-after") passes in a minute
-				a.sleep(time.Minute)
-				err = a.sys.Run("docker", j...)
+	before := a.st.Images
+	_, total, _ := countImages(before)
+	slog.Info(what+": a verificar no registo", "imagens", total, "stacks", len(jobs))
+	go a.pullAll(what, jobs, before)
+}
+
+// pullAll runs the pulls of nightly, prunes what they replaced and tells how
+// it went. before is the image scan from before the pulls.
+func (a *Agent) pullAll(what string, jobs [][]string, before map[string]Stack) {
+	defer a.pulling.Store(false)
+	start := time.Now()
+	failed := a.pullJobs(what, jobs)
+	if out, err := a.sys.Output("docker", "image", "prune", "-f"); err != nil {
+		slog.Warn("docker image prune", "error", err)
+	} else if _, freed, ok := strings.Cut(strings.TrimSpace(out), "Total reclaimed space: "); ok && freed != "0B" {
+		slog.Info(what+": imagens antigas apagadas", "libertado", freed)
+	}
+	slog.Info(what+": terminou", "demorou", time.Since(start).Round(time.Second).String())
+	a.scanImages()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.now = time.Now()
+	got := pulled(before, a.st.Images)
+	for _, ref := range got {
+		slog.Info(what+": imagem descarregada", "imagem", ref)
+	}
+	for ref, why := range unpulled(a.st.Images) {
+		slog.Info(what+": imagem que a descarga não verifica", "imagem", ref, "porquê", why)
+	}
+	balance := map[bool]string{true: "nada de novo, ", false: fmt.Sprintf("%d descarregadas, ", len(got))}[len(got) == 0] + imageBalance(a.st.Images)
+	if failed != nil { // a hole in the safety net: told the same morning
+		a.alert("", what+" com falhas ("+balance+"): "+strings.Join(failed, "; "))
+	} else {
+		a.event("", what+": imagens "+balance)
+	}
+	a.save()
+}
+
+// pullJobs runs each stack's pull, once more after a minute when it fails,
+// and is what still failed. No internet stops them all.
+func (a *Agent) pullJobs(what string, jobs [][]string) (failed []string) {
+	for _, j := range jobs {
+		stack := strings.TrimPrefix(j[2], "failover-")
+		slog.Info(what+": a verificar atualizações de "+stack, "stack", stack)
+		err := a.sys.Run("docker", j...)
+		if err != nil && a.internetErr() != nil { // no registry answers: the other stacks and a retry would only wait
+			slog.Warn(what+": sem internet, fica para a próxima", "stack", stack, "error", err)
+			failed = append(failed, "sem internet")
+			break
+		}
+		if err != nil { // a registry's rate limit (ghcr.io's "retry-after") passes in a minute
+			slog.Warn(what+": "+stack+" falhou, outra tentativa daqui a 1 min", "stack", stack, "error", err)
+			a.sleep(time.Minute)
+			err = a.sys.Run("docker", j...)
+		}
+		if err != nil {
+			failed = append(failed, j[2]+": "+err.Error())
+		}
+	}
+	return failed
+}
+
+// unpulled is every image the pull skips, once, with why.
+func unpulled(stacks map[string]Stack) map[string]string {
+	m := map[string]string{}
+	for _, st := range stacks {
+		for _, im := range st.Images {
+			if im.NoPull != "" {
+				m[im.Ref] = im.NoPull
 			}
-			if err != nil {
-				failed = append(failed, j[2]+": "+err.Error())
+		}
+	}
+	return m
+}
+
+// pulled is every image the TNAS has after a pull that it lacked before, or
+// that the pull replaced (another Created): the pull's own output goes by too
+// fast to read, the scans before and after it say what came down.
+func pulled(before, after map[string]Stack) []string {
+	old := map[string]Image{}
+	for _, st := range before {
+		for _, im := range st.Images {
+			old[im.Ref] = im
+		}
+	}
+	var got []string
+	for _, st := range after {
+		for _, im := range st.Images {
+			if o := old[im.Ref]; im.Present && (!o.Present || !im.Created.Equal(o.Created)) {
+				got = append(got, im.Ref)
 			}
 		}
-		if err := a.sys.Run("docker", "image", "prune", "-f"); err != nil {
-			slog.Warn("docker image prune", "error", err)
-		}
-		a.scanImages()
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		a.now = time.Now()
-		balance := imageBalance(a.st.Images)
-		if failed != nil { // a hole in the safety net: told the same morning
-			a.alert("", what+" com falhas ("+balance+"): "+strings.Join(failed, "; "))
-		} else {
-			a.event("", what+": imagens "+balance)
-		}
-		a.save()
-	}()
+	}
+	slices.Sort(got)
+	return slices.Compact(got)
 }
 
 // save publishes the view and writes state.json, only when it changed: a

@@ -109,8 +109,13 @@ func TestAnalyzeCompose(t *testing.T) {
 	if err != nil || !im.Names["immich_server"] || !im.Names["immich-server"] || im.Ports[2283] != "immich-server" {
 		t.Fatalf("immich: %v %+v", err, im)
 	}
-	if _, err := analyzeCompose([]byte("não é json"), ""); err == nil {
+	if _, err = analyzeCompose([]byte("não é json"), ""); err == nil {
 		t.Fatal("aceitou lixo")
+	}
+	// A service built here or with pull_policy: never is listed, with why the pull skips it.
+	b, err := analyzeCompose([]byte(`{"name":"p","services":{"app":{"build":{"context":"."}},"db":{"image":"pg","pull_policy":"never"},"ok":{"image":"redis","build":{"context":"."}}}}`), "")
+	if err != nil || !slices.Equal(b.Images, []string{"p-app", "pg", "redis"}) || b.NoPull["p-app"] == "" || b.NoPull["pg"] != "pull_policy: never" || b.NoPull["redis"] != "" {
+		t.Fatalf("build/never: %v %v %v", err, b.Images, b.NoPull)
 	}
 }
 

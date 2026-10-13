@@ -80,6 +80,7 @@ func TestServiceAddRefused(t *testing.T) {
 		{with("name", `"npm"`), "name"},
 		{with("dir", `"sem-compose"`), "dir"},
 		{with("dir", `"technitium"`), "dir"},
+		{with("host", `""`), "host"},
 		{with("host", `"https://cloud.engmariz.com"`), "host"},
 		{with("wait_min", `0`), "wait_min"},
 		{with("require_free_ip", `"x"`), "require_free_ip"},
