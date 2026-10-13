@@ -176,10 +176,11 @@ type composeInfo struct {
 	FreeIP    string            // the IP a copy must find free (a macvlan's)
 	Notes     []string
 	lan       string
-	macvlans  []string // networks to move to the TNAS's LAN interface
-	heavy     []string // services with a GPU or devices
-	Images    []string // the image of every service, sorted, once each (built ones by compose's name)
-	External  []string // external networks: they must exist on the TNAS
+	macvlans  []string          // networks to move to the TNAS's LAN interface
+	heavy     []string          // services with a GPU or devices
+	Images    []string          // the image of every service, sorted, once each (built ones by compose's name)
+	NoPull    map[string]string // image → why `docker compose pull` leaves it: built here, or pull_policy: never
+	External  []string          // external networks: they must exist on the TNAS
 	Published []pubPort
 	Binds     []string // absolute sources of bind mounts
 	Named     []string // named volumes: they start empty on the TNAS and go on the return
@@ -206,7 +207,7 @@ func analyzeCompose(js []byte, lanIface string) (composeInfo, error) {
 	if err := json.Unmarshal(js, &c); err != nil {
 		return composeInfo{}, fmt.Errorf("docker compose config não deu JSON: %w", err)
 	}
-	info := composeInfo{Names: map[string]bool{}, strong: map[string]bool{}, keyOf: map[string]string{}, Ports: map[int]string{}, FixedIPs: map[string]string{}, lan: lanIface}
+	info := composeInfo{Names: map[string]bool{}, strong: map[string]bool{}, keyOf: map[string]string{}, Ports: map[int]string{}, FixedIPs: map[string]string{}, NoPull: map[string]string{}, lan: lanIface}
 	for n, net := range c.Networks {
 		if net.Driver == "macvlan" || net.Driver == "ipvlan" {
 			info.macvlans = append(info.macvlans, n)
@@ -232,6 +233,7 @@ func analyzeCompose(js []byte, lanIface string) (composeInfo, error) {
 type composeService struct {
 	ContainerName string `json:"container_name"`
 	Image         string `json:"image"`
+	PullPolicy    string `json:"pull_policy"`
 	Hostname      string `json:"hostname"` // an NPM may point to it: it is as specific as the container name
 	Ports         []struct {
 		Published any    `json:"published"`
@@ -278,7 +280,14 @@ func (info *composeInfo) addService(project, k string, s composeService) {
 			info.Names[n], info.strong[n], info.keyOf[n] = true, true, k
 		}
 	}
-	info.Images = append(info.Images, cmp.Or(s.Image, project+"-"+k)) // a built image is named <project>-<service>
+	ref := cmp.Or(s.Image, project+"-"+k) // a built image is named <project>-<service>
+	info.Images = append(info.Images, ref)
+	switch { // what compose pull skips: the TNAS only gets these by hand
+	case s.PullPolicy == "never":
+		info.NoPull[ref] = "pull_policy: never"
+	case s.Image == "":
+		info.NoPull[ref] = "construída no servidor (build:)"
+	}
 	info.addPortsAndMounts(k, s)
 	for n, sn := range s.Networks {
 		if sn != nil && sn.IPv4 != "" && slices.Contains(info.macvlans, n) {
@@ -609,7 +618,7 @@ func (a *Agent) discover() discovery {
 		s.OverrideYAML, s.RequireFreeIP = info.overrideFor(as.keys), info.FreeIP
 		s.Notes = slices.Concat(info.Notes, as.notes, dataNotes(info, c.Paths.MirrorSubvol), a.tnasNotes(info, running[s.Name]))
 		if s.Host == "" && len(hosts) > 0 {
-			s.Notes = append(s.Notes, "nenhum proxy host do NPM aponta para este compose")
+			s.Notes = append(s.Notes, "nenhum proxy host do NPM aponta para este compose: o agente só vigia pelo NPM, não o consegue proteger; se é um auxiliar de outro serviço, ignora-o")
 		}
 		d.Services = append(d.Services, s)
 	}

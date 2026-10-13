@@ -200,7 +200,7 @@ export function discListHtml(d, pickable) {
         ${notes.map(n => `<small class="disc-notes">${esc(sentence(n))}</small>`).join('')}</span>
       ${x.configured ? chip('Já protegido', 'var(--success)', 'xs') : ''}
       ${pickable ? '' : x.configured ? `<button class="btn" data-panel="svcEdit" data-svc="${esc(x.name)}">${icon('wrench')}Editar</button>`
-        : `<button class="btn" data-panel="svcEdit" data-prefill="${esc(x.dir)}">Adicionar</button><button class="btn" data-ignore="1" data-dir="${esc(x.dir)}" title="Uma pasta antiga, de um container que já não existe: sai da lista e a vigia do espelho deixa de avisar por ela">Ignorar</button>`}</li>`;
+        : `${x.host || !d.npm.found ? `<button class="btn" data-panel="svcEdit" data-prefill="${esc(x.dir)}">Adicionar</button>` : ''}<button class="btn" data-ignore="1" data-dir="${esc(x.dir)}" title="Uma pasta antiga, de um container que já não existe: sai da lista e a vigia do espelho deixa de avisar por ela">Ignorar</button>`}</li>`;
   }).join('');
   // folders left out by hand (an old container's, still in the backup), out of the way
   const away = pickable || !ignored.length ? '' : `<details class="disc-ignored"><summary class="muted">${plural(ignored.length, 'pasta ignorada', 'pastas ignoradas')}</summary>

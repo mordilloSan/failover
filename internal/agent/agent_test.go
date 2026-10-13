@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,6 +25,7 @@ type fake struct {
 	gets     []string        // every URL fetched
 	badCert  map[string]bool // host → its certificate does not verify
 	busy     map[string]bool // "tcp 10.0.0.1:443" → something listens there
+	noIP     map[string]bool // "10.0.0.66" → an IP the TNAS does not have
 	slow     map[string]int  // host@ip → checks it still fails before it answers
 	noPing   map[string]bool // ip → does not answer ping
 	down     map[string]bool // "host@ip" → HTTPS check fails
@@ -62,6 +65,9 @@ func (f *fake) PortFree(proto, addr string) error {
 	defer f.mu.Unlock()
 	if f.busy[proto+" "+addr] {
 		return errors.New("address already in use")
+	}
+	if h, _, _ := net.SplitHostPort(addr); f.noIP[h] {
+		return &net.OpError{Op: "listen", Err: &os.SyscallError{Syscall: "bind", Err: syscall.EADDRNOTAVAIL}}
 	}
 	return nil
 }
@@ -284,7 +290,9 @@ func TestPullAtStart(t *testing.T) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		return len(slices.DeleteFunc(slices.Clone(f.cmds), func(c string) bool { return c != "docker image prune -f" }))
+		return len(slices.DeleteFunc(slices.Clone(f.cmds), func(c string) bool {
+			return !strings.HasPrefix(c, "docker compose -p failover-npm ") || !strings.HasSuffix(c, " pull -q")
+		}))
 	}
 	night := time.Date(2026, 9, 27, 3, 0, 0, 0, time.UTC)
 	a.Tick(night)
@@ -299,6 +307,66 @@ func TestPullAtStart(t *testing.T) {
 	a.Tick(night.Add(2 * time.Hour))
 	if pulls() != 2 || a.st.LastPull != "2026-09-27" || !hasEvent(a, "descarga noturna: imagens") {
 		t.Fatalf("noite: last_pull %q, comandos %v", a.st.LastPull, f.cmds)
+	}
+}
+
+// A pull without internet stops at the first stack, with no retry: one
+// alert, not four minutes of waiting.
+func TestPullNoInternet(t *testing.T) {
+	a, f := setup(t)
+	a.cfg.Nightly.PrepullAt = "05:00"
+	f.failCmd = []string{"docker compose"}
+	f.getErr = map[string]error{"https://registry-1.docker.io/": errors.New("no route to host")}
+	a.pullNow = true
+	a.Tick(t0)
+	for a.pulling.Load() {
+		time.Sleep(time.Millisecond)
+	}
+	f.mu.Lock()
+	pulls := len(slices.DeleteFunc(slices.Clone(f.cmds), func(c string) bool { return !strings.HasSuffix(c, " pull -q") }))
+	f.mu.Unlock()
+	alerted := slices.ContainsFunc(a.alerts, func(al alertItem) bool {
+		return strings.Contains(al.Msg, "descarga ao arrancar com falhas") && strings.Contains(al.Msg, "sem internet")
+	})
+	if pulls != 1 || !alerted {
+		t.Fatalf("%d descargas, avisos %+v", pulls, a.alerts)
+	}
+}
+
+// A start with the pull on scans once, after the pull; without it, at once.
+func TestStartScansOnce(t *testing.T) {
+	for _, at := range []string{"05:00", ""} {
+		a, f := setup(t)
+		a.cfg.Nightly.PrepullAt = at
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		a.Run(ctx)
+		for a.pulling.Load() || a.scanning.Load() {
+			time.Sleep(time.Millisecond)
+		}
+		f.mu.Lock()
+		scans := len(slices.DeleteFunc(slices.Clone(f.scans), func(c string) bool {
+			return !strings.HasPrefix(c, "docker compose -p failover-npm ") || !strings.HasSuffix(c, " --format json")
+		}))
+		pulls := len(slices.DeleteFunc(slices.Clone(f.cmds), func(c string) bool { return !strings.HasSuffix(c, " pull -q") }))
+		f.mu.Unlock()
+		if scans != 1 || (pulls > 0) != (at != "") {
+			t.Fatalf("prepull_at %q: %d verificações, %d descargas", at, scans, pulls)
+		}
+	}
+}
+
+// pulled is what a pull brought: an image that was missing, or one whose
+// Created changed; the same image in two stacks counts once.
+func TestPulled(t *testing.T) {
+	d1, d2 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	before := map[string]Stack{"a": {Images: []Image{{Ref: "same", Present: true, Created: d1}, {Ref: "newer", Present: true, Created: d1}, {Ref: "missing"}}}}
+	after := map[string]Stack{
+		"a": {Images: []Image{{Ref: "same", Present: true, Created: d1}, {Ref: "newer", Present: true, Created: d2}, {Ref: "missing", Present: true, Created: d2}}},
+		"b": {Images: []Image{{Ref: "missing", Present: true, Created: d2}, {Ref: "still-missing"}}},
+	}
+	if got := pulled(before, after); !slices.Equal(got, []string{"missing", "newer"}) {
+		t.Fatalf("pulled = %v", got)
 	}
 }
 
@@ -856,11 +924,11 @@ func TestDeleteSnapshotGuard(t *testing.T) {
 func TestScanImages(t *testing.T) {
 	a, f := setup(t)
 	buf := logs(t)
-	f.busy = map[string]bool{"tcp :2283": true}
+	f.busy, f.noIP = map[string]bool{"tcp :2283": true}, map[string]bool{"10.0.0.66": true}
 	f.failCmd = []string{"docker network inspect proxy"}
 	f.outs = map[string]string{
 		// two services on redis:7: listed once; an external network the TNAS lacks; a port taken
-		"docker compose -p failover-immich": `{"name":"failover-immich","services":{"server":{"image":"ghcr.io/immich-app/immich-server:v2","ports":[{"published":"2283","protocol":"tcp"}]},
+		"docker compose -p failover-immich": `{"name":"failover-immich","services":{"server":{"image":"ghcr.io/immich-app/immich-server:v2","ports":[{"published":"2283","protocol":"tcp"},{"published":"2375","host_ip":"10.0.0.66","protocol":"tcp"}]},
 			"redis":{"image":"redis:7"},"cache":{"image":"redis:7"}},"networks":{"proxy":{"name":"proxy","external":true}}}`,
 		"docker compose -p failover-":                                   `{"name":"x","services":{"vaultwarden":{"image":"vaultwarden/server:latest"}}}`,
 		"docker image inspect --format {{.Size}} {{.Created}} redis:7":  "41000000 2026-09-20T04:00:00.5Z\n",
@@ -874,7 +942,7 @@ func TestScanImages(t *testing.T) {
 	if v := a.st.Images["vaultwarden"].Images; len(v) != 1 || !v[0].Present || a.st.Images["npm"].Images == nil {
 		t.Fatalf("imagens: %+v", a.st.Images)
 	}
-	if n := a.st.Images["immich"].Notes; len(n) != 2 || !strings.Contains(n[0], "a rede proxy não existe no TNAS") || !strings.Contains(n[1], "a porta 2283/tcp já está ocupada") {
+	if n := a.st.Images["immich"].Notes; len(n) != 3 || !strings.Contains(n[0], "a rede proxy não existe no TNAS") || !strings.Contains(n[1], "a porta 2283/tcp já está ocupada") || !strings.Contains(n[2], "publica a porta 2375 no IP 10.0.0.66, que o TNAS não tem") {
 		t.Fatalf("pré-requisitos do TNAS: %q", n)
 	}
 	if !slices.ContainsFunc(f.scans, func(c string) bool {
