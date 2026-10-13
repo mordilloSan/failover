@@ -398,6 +398,7 @@ type Agent struct {
 	view       atomic.Pointer[view]
 	api        atomic.Pointer[view] // GET /api/
 	pulling    atomic.Bool
+	pullNow    bool // set at start: the next tick pulls whatever the hour, so missing or outdated images come down at once
 	scanning   atomic.Bool
 	rescan     atomic.Bool // asked for while a scan ran
 	beats      map[string][]Beat
@@ -473,6 +474,7 @@ func (a *Agent) Run(ctx context.Context) {
 	a.iconJobs.Go(a.fetchIcons)
 	a.mu.Lock()
 	a.st.Running = true
+	a.pullNow = true
 	a.save()
 	a.mu.Unlock()
 	defer func() {
@@ -1623,14 +1625,21 @@ func imageBalance(stacks map[string]Stack) string {
 	return fmt.Sprintf("%d de %d no TNAS, %s GB", present, total, gb)
 }
 
-// nightly pulls every image once a day after prepull_at, from the compose
-// files in the mirror, so a failover never needs the internet (O4).
+// nightly pulls every image once a day after prepull_at, and once at start,
+// from the compose files in the mirror, so a failover never needs the
+// internet (O4). A pull brings what is missing or outdated; the prune then
+// deletes the images it replaced.
 func (a *Agent) nightly() {
 	at, day := a.cfg.Nightly.PrepullAt, a.now.Format("2006-01-02")
-	if at == "" || a.st.LastPull == day || a.now.Format("15:04") < at || !a.pulling.CompareAndSwap(false, true) {
+	due := a.st.LastPull != day && a.now.Format("15:04") >= at
+	if at == "" || !due && !a.pullNow || !a.pulling.CompareAndSwap(false, true) {
 		return
 	}
-	a.st.LastPull = day
+	what := map[bool]string{true: "descarga ao arrancar", false: "descarga noturna"}[a.pullNow]
+	a.pullNow = false
+	if due { // a start before prepull_at leaves the night's pull, after the mirror, still to do
+		a.st.LastPull = day
+	}
 	root := a.cfg.Paths.MirrorSubvol
 	jobs := [][]string{slices.Concat([]string{"compose", "-p", "failover-npm"}, a.cfg.files(root, a.cfg.NPM.Dir, ""), []string{"pull", "-q"})}
 	for _, sv := range a.cfg.Services {
@@ -1658,9 +1667,9 @@ func (a *Agent) nightly() {
 		a.now = time.Now()
 		balance := imageBalance(a.st.Images)
 		if failed != nil { // a hole in the safety net: told the same morning
-			a.alert("", "descarga noturna com falhas ("+balance+"): "+strings.Join(failed, "; "))
+			a.alert("", what+" com falhas ("+balance+"): "+strings.Join(failed, "; "))
 		} else {
-			a.event("", "descarga noturna: imagens "+balance)
+			a.event("", what+": imagens "+balance)
 		}
 		a.save()
 	}()

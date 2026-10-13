@@ -79,7 +79,7 @@ export function tnasPanel() {
           ${s.dns ? chip('DNS → TNAS', 'var(--info)', 'xs') : ''}${chip(look(s).label, look(s).c, 'xs')}</li>`).join('')}</ul>`
         : '<p class="note-text">Nenhuma cópia a correr. Cada failover arranca de um snapshot Btrfs do espelho.</p>')
       + sec('Imagens para o failover', summary + stacks, scanBtn)
-      + sec('Descarga noturna', `<p>${st.prepull_at ? `Todas as noites às ${esc(st.prepull_at)}, a partir dos composes do espelho.` : 'Desligada.'}
+      + sec('Descarga noturna', `<p>${st.prepull_at ? `Todas as noites às ${esc(st.prepull_at)} e ao arrancar o agente, a partir dos composes do espelho; as imagens substituídas são apagadas.` : 'Desligada.'}
           Última: ${esc(st.last_pull || 'ainda nenhuma')}.</p>`),
   };
 }
