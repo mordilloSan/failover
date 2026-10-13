@@ -43,7 +43,7 @@ email:                                 # avisos: em Definições → Avisos (Gma
   to: ""                               # vazio: o utilizador
 
 nightly:
-  prepull_at: "05:00"                  # depois do espelho das 04:30; "" desliga
+  prepull_at: "05:00"                  # depois do espelho das 04:30, e ao arrancar; "" desliga
 
 ui:
   listen: 0.0.0.0:8099                 # no primeiro acesso cria-se a conta de administrador

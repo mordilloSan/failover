@@ -38,7 +38,7 @@ export const SECTIONS = [
     {k: 'email.from', l: 'Remetente', h: 'Vazio: o utilizador.'},
     {k: 'email.to', l: 'Enviar para', h: 'Vazio: o utilizador.'}]},
   {id: 'noturna', title: 'Descarga noturna', fields: [
-    {k: 'nightly.prepull_at', l: 'Hora', t: 'time', h: 'Descarrega as imagens dos composes do espelho. Vazio desliga.'}]},
+    {k: 'nightly.prepull_at', l: 'Hora', t: 'time', h: 'Descarrega as imagens em falta ou desatualizadas dos composes do espelho, a esta hora e ao arrancar o agente, e apaga as que substitui. Vazio desliga.'}]},
   {id: 'interface', title: 'Interface', fields: [
     {k: 'ui.listen', l: 'Endereço e porta', h: 'Por exemplo 0.0.0.0:8099. Muda depois de reiniciar o agente.'}]},
 ];

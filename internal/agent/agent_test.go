@@ -273,6 +273,35 @@ func TestRunStops(t *testing.T) {
 	}
 }
 
+// The start pulls whatever the hour, then prunes what the pull replaced; a
+// start before prepull_at leaves the night's pull to do.
+func TestPullAtStart(t *testing.T) {
+	a, f := setup(t)
+	a.cfg.Nightly.PrepullAt = "05:00"
+	pulls := func() int {
+		for a.pulling.Load() { // the pull runs in the background
+			time.Sleep(time.Millisecond)
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return len(slices.DeleteFunc(slices.Clone(f.cmds), func(c string) bool { return c != "docker image prune -f" }))
+	}
+	night := time.Date(2026, 9, 27, 3, 0, 0, 0, time.UTC)
+	a.Tick(night)
+	if pulls() != 0 {
+		t.Fatal("descarga antes de prepull_at sem ser o arranque")
+	}
+	a.pullNow = true
+	a.Tick(night)
+	if pulls() != 1 || a.st.LastPull != "" || !hasEvent(a, "descarga ao arrancar: imagens") {
+		t.Fatalf("arranque: last_pull %q, comandos %v", a.st.LastPull, f.cmds)
+	}
+	a.Tick(night.Add(2 * time.Hour))
+	if pulls() != 2 || a.st.LastPull != "2026-09-27" || !hasEvent(a, "descarga noturna: imagens") {
+		t.Fatalf("noite: last_pull %q, comandos %v", a.st.LastPull, f.cmds)
+	}
+}
+
 // logs sends slog to a buffer for the rest of the test.
 func logs(t *testing.T) *bytes.Buffer {
 	t.Helper()
