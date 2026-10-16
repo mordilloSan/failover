@@ -27,7 +27,7 @@ maintenance:
   default_expiry_min: 60
 
 dns:
-  api_url: http://127.0.0.1:5380
+  api_url: https://127.0.0.1:53443     # o HTTPS do Technitium; em loopback aceita-se o certificado auto-assinado
   token_file: /config/technitium.token
   zone: engmariz.com
   ttl: 60

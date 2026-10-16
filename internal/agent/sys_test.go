@@ -103,3 +103,26 @@ func TestComposeDownByProjectName(t *testing.T) {
 		t.Fatalf("sobraram %d containers e %d volumes", c, v)
 	}
 }
+
+// Get takes the self-signed certificate of a Technitium on this box (a
+// loopback URL) but follows no redirect out of the box with it.
+func TestGetLoopbackTLS(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/away" {
+			http.Redirect(w, r, "https://example.invalid/", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer ts.Close()
+	_, port, _ := net.SplitHostPort(ts.Listener.Addr().String())
+	var s RealSys
+	for _, u := range []string{ts.URL, "https://localhost:" + port} {
+		if b, err := s.Get(u+"/", ""); err != nil || string(b) != "ok" {
+			t.Errorf("%s: %q %v", u, b, err)
+		}
+	}
+	if _, err := s.Get(ts.URL+"/away", ""); err == nil || !strings.Contains(err.Error(), "fora desta máquina") {
+		t.Errorf("redirect para fora: %v", err)
+	}
+}
