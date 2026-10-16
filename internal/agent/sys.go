@@ -145,6 +145,27 @@ func lookupAt(ip, name string) error {
 
 var apiClient = &http.Client{Timeout: 10 * time.Second}
 
+// loopClient is for a URL on this box, such as the TNAS's own Technitium on
+// https://127.0.0.1:53443: its certificate is self-signed, and what goes to
+// loopback never leaves the box. A redirect out of the box is refused.
+var loopClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, //nolint:gosec // loopback only
+	},
+	CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+		if !loopback(req.URL) {
+			return errors.New("redirect para fora desta máquina")
+		}
+		return nil
+	},
+}
+
+func loopback(u *url.URL) bool {
+	h := u.Hostname()
+	return h == "localhost" || net.ParseIP(h).IsLoopback()
+}
+
 func (RealSys) Get(u, bearer string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
@@ -153,7 +174,11 @@ func (RealSys) Get(u, bearer string) ([]byte, error) {
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	resp, err := apiClient.Do(req)
+	c := apiClient
+	if loopback(req.URL) {
+		c = loopClient
+	}
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, unwrapURL(err)
 	}

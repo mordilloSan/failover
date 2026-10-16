@@ -23,7 +23,7 @@ docker compose pull && docker compose up -d
 ```
 
 1. Abre `https://192.168.1.249:8099` nos **30 minutos** a seguir ao arranque e cria a conta de administrador com o código que o agente escreve no arranque (`docker logs failover-agent`). O browser avisa do certificado: é o do próprio agente, aceita-o uma vez.
-2. **Configurar em 1 minuto:** confirma a rede e os caminhos que o agente encontrou, cola o token da API do Technitium (Administração → Sessões → Criar token), escolhe o email dos avisos e marca os serviços a proteger. **Começar** guarda tudo, faz um snapshot de teste e envia um email de teste. Cada bloco diz se correu bem.
+2. **Configurar em 1 minuto:** confirma a rede e os caminhos que o agente encontrou, cola o token da API do Technitium (Administração → Sessões → Criar token), escolhe o email dos avisos e marca os serviços a proteger. **Começar** guarda tudo, faz um snapshot de teste e envia um email de teste. Cada bloco diz se correu bem. O agente fala com o Technitium do TNAS em `https://127.0.0.1:53443` (o HTTPS do Technitium, em Settings → Web Service); num endereço de loopback aceita o certificado auto-assinado do Technitium, noutro qualquer exige um certificado válido. Uma instalação anterior com `http://127.0.0.1:5380` muda-o em ⚙ Definições → DNS, com todos os serviços em casa.
 3. Começa em observação. Quando os eventos mostrarem o que esperas, passa a automático em ⚙ Definições → Geral.
 
 ### O `*` da zona no Technitium
