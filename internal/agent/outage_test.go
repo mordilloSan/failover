@@ -8,49 +8,6 @@ import (
 	"time"
 )
 
-// Case 2.3 (server NPM down, server pinging) never fails a service over, even
-// with two isolated lost pings far apart: nothing is known of the services.
-func TestLostPingsNeverFailOver(t *testing.T) {
-	a, f := setup(t)
-	f.down["nginx.engmariz.com@"+srv] = true // NPM down, server alive
-	at := t0
-	for i := 0; i <= 60; i++ {
-		f.mu.Lock()
-		f.noPing[srv] = i == 1 || i == 60 // one lost ICMP packet at minute 1 and at minute 60
-		f.mu.Unlock()
-		a.Tick(at)
-		at = at.Add(time.Minute)
-	}
-	if s := a.st.Services["vaultwarden"]; s.State != Normal {
-		t.Errorf("vaultwarden %s (FailSince %v) com 2 pings perdidos isolados", s.State, s.FailSince)
-	}
-}
-
-// A first reboot that leaves the NPM down must not make the first lost ping of
-// a second one fail every service over at once.
-func TestSecondRebootWaits(t *testing.T) {
-	a, f := setup(t)
-	at := t0
-	step := func(npmDown, pingDown bool) {
-		f.mu.Lock()
-		f.down["nginx.engmariz.com@"+srv], f.noPing[srv] = npmDown, pingDown
-		f.mu.Unlock()
-		a.Tick(at)
-		at = at.Add(time.Minute)
-	}
-	step(true, true) // reboot 1: 2 min down (< every wait_min)
-	step(true, true)
-	for range 40 { // back, but its NPM does not start: case 2.3
-		step(true, false)
-	}
-	step(true, true) // reboot 2, first tick
-	for n, s := range a.st.Services {
-		if s.State != Normal {
-			t.Errorf("%s: %s no primeiro tick do segundo reboot", n, s.State)
-		}
-	}
-}
-
 // The stability window survives a server-NPM outage no more than a failure does.
 func TestOKSinceDoesNotSurviveNPMOutage(t *testing.T) {
 	a, f := setup(t)
@@ -297,14 +254,32 @@ func macvlanFailover(t *testing.T, arp string) (*Agent, *fake, time.Time) {
 	f.outs = map[string]string{
 		"docker ps -q":   "abc\n",
 		"docker inspect": "192.168.1.92 02:42:c0:a8:01:5c\n",
-		"arping -c 1 -w 3 -I ovs_eth0 192.168.1.92": arp,
 	}
 	f.down["unifi.engmariz.com@"+srv] = true
 	at := t0
 	tickTo(a, &at, 16)
 	wantStates(t, a, map[string]string{"unifi": Active})
+	f.outs["arping -c 1 -w 3 -I ovs_eth0 192.168.1.92"] = arp // from here the IP answers (or not)
 	delete(f.down, "unifi.engmariz.com@"+srv)
 	return a, f, at
+}
+
+// A service with its own IP is up while the server's container answers ARP
+// there, the NPM down or not: UniFi's devices talk to the IP, and a copy could
+// not take it anyway. The IP gone, it fails over like any other.
+func TestMacvlanIPAnswersIsUp(t *testing.T) {
+	a, f := setup(t)
+	f.outs = map[string]string{"arping -c 1 -w 3 -I ovs_eth0 192.168.1.92": "Unicast reply from 192.168.1.92 [aa:bb:cc:dd:ee:ff]  0.650ms\n"}
+	f.down["nginx.engmariz.com@"+srv] = true // NPM down, server alive
+	at := t0
+	tickTo(a, &at, 30)
+	wantStates(t, a, map[string]string{"vaultwarden": Active, "unifi": Normal})
+	if b := a.beats["unifi"]; b[len(b)-1].S != "up" {
+		t.Fatalf("unifi com o IP a responder: %+v", b[len(b)-1])
+	}
+	delete(f.outs, "arping -c 1 -w 3 -I ovs_eth0 192.168.1.92") // the server's container is gone
+	tickTo(a, &at, 50)
+	wantStates(t, a, map[string]string{"unifi": Active})
 }
 
 // A service with its own IP answers on the server only when that IP answers ARP from

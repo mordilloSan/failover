@@ -494,9 +494,9 @@ func TestPartialFailoverAndReturn(t *testing.T) {
 	}
 }
 
-// T-15: server NPM down but the server pings: warn after 3 min, never fail
-// over a service. The TNAS NPM stands in once (R8): the Failover app sends
-// the zone's * to the TNAS on 443 failing, the host up or not.
+// T-15: server NPM down but the server pings: the NPM is the only path to
+// the services, so every one counts as failing and goes over after its own
+// wait_min; the warning at alert_after_min says it is the NPM, not the apps.
 func TestServerNPMDownServerAlive(t *testing.T) {
 	a, f := setup(t)
 	f.down["nginx.engmariz.com@"+srv] = true
@@ -505,23 +505,25 @@ func TestServerNPMDownServerAlive(t *testing.T) {
 	if a.st.NPMAlerted {
 		t.Fatal("avisou antes de alert_after_min")
 	}
-	tickTo(a, &at, 60)
+	tickTo(a, &at, 4)
 	a.mailJobs.Wait()
 	if !a.st.NPMAlerted || !mailed(f, "NPM do servidor em falha") {
 		t.Fatal("sem aviso do NPM")
 	}
-	for _, c := range f.cmds {
-		if !strings.Contains(c, "failover-npm") {
-			t.Fatalf("agiu sobre um serviço no caso 2.3: %v", f.cmds)
-		}
+	wantStates(t, a, map[string]string{"vaultwarden": Normal, "homepage": Normal}) // vaultwarden waits 5 min, homepage 10
+	tickTo(a, &at, 12)
+	wantStates(t, a, map[string]string{"vaultwarden": Active, "homepage": Active, "speedtest": Normal})
+	if npmStarts(f) != 1 {
+		t.Fatalf("NPM do TNAS: %d arranques", npmStarts(f))
 	}
-	if npmStarts(f) != 1 || !a.st.TNASNPM.StandIn {
-		t.Fatalf("o NPM do TNAS não ficou no lugar do do servidor: %d arranques, %+v", npmStarts(f), a.st.TNASNPM)
+	// the bars in the UI: the NPM failed, so did every service
+	if b := a.beats["vaultwarden"]; b[len(b)-1].S != "down" || a.beats["npm"][len(a.beats["npm"])-1].S != "down" {
+		t.Fatalf("histórico das verificações errado: %+v", b[len(b)-1])
 	}
-	// the bars in the UI: the NPM failed, the services were not checked
-	if b := a.beats["vaultwarden"]; len(b) != maxBeats || b[len(b)-1].S != "unknown" || a.beats["npm"][maxBeats-1].S != "down" {
-		t.Fatalf("histórico das verificações errado: %d %+v", len(b), b[len(b)-1])
-	}
+	// the NPM answers again: the services go home after the stability time
+	delete(f.down, "nginx.engmariz.com@"+srv)
+	tickTo(a, &at, 30)
+	wantStates(t, a, map[string]string{"vaultwarden": Normal, "homepage": Normal})
 }
 
 // A forced failover stays on the TNAS with the server healthy, past the
@@ -744,7 +746,7 @@ func TestUnifiIPBusy(t *testing.T) {
 	}
 	tickTo(a, &at, 40)
 	// tried again every start_timeout_min (10) while the server is down, never every tick
-	if n := strings.Count(strings.Join(f.cmds, "\n"), "arping"); n < 2 || n > 4 {
+	if n := strings.Count(strings.Join(f.cmds, "\n"), "arping -D"); n < 2 || n > 4 {
 		t.Fatalf("%d arpings em 25 min de ERROR: queria uma nova tentativa a cada 10 min", n)
 	}
 	delete(f.down, "unifi.engmariz.com@"+srv)

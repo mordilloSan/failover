@@ -645,9 +645,9 @@ func (a *Agent) probe() probe {
 	a.mu.Lock()
 	c := a.cfg // the UI replaces a.cfg and never edits it in place, so this copy is safe to read
 	tnasNPM := a.st.TNASNPM.Snapshot != ""
-	macs := map[string]string{} // service → its copy's MAC, for an ACTIVE one with its own IP
+	macs := map[string]string{} // service → its copy's MAC, for one with its own IP whose copy is up
 	for _, sv := range c.Services {
-		if s := a.st.Services[sv.Name]; s != nil && s.State == Active && sv.RequireFreeIP != "" && s.CopyMAC != "" {
+		if s := a.st.Services[sv.Name]; s != nil && sv.RequireFreeIP != "" && s.CopyMAC != "" {
 			macs[sv.Name] = s.CopyMAC
 		}
 	}
@@ -683,15 +683,25 @@ func (a *Agent) probe() probe {
 	p.serverPing = !p.npmOK && ping // used only when the NPM failed
 	ok, ms := make([]bool, len(c.Services)), make([]int, len(c.Services))
 	var wg sync.WaitGroup
-	if p.npmOK { // with the NPM down every service is down
-		for i, sv := range c.Services {
-			wg.Go(func() {
+	for i, sv := range c.Services {
+		wg.Go(func() {
+			if p.npmOK { // with the NPM down every service is down for the clients
 				ok[i], ms[i] = timed(sv.Host, c.Server.IP)
-				if mac := macs[sv.Name]; ok[i] && mac != "" {
-					ok[i] = a.serverHoldsIP(c.LANIface, sv.RequireFreeIP, mac)
-				}
-			})
-		}
+			}
+			ip := sv.RequireFreeIP
+			if ip == "" {
+				return
+			}
+			// A service with its own IP is up for what uses that IP (UniFi's devices)
+			// while the server's container answers ARP there, whatever the NPM says.
+			if mac := macs[sv.Name]; mac != "" { // the copy holds the IP: only another MAC is the server's
+				ok[i] = ok[i] && a.serverHoldsIP(c.LANIface, ip, mac)
+			} else if !ok[i] {
+				t := time.Now()
+				ok[i] = a.serverHoldsIP(c.LANIface, ip, "")
+				ms[i] = int(time.Since(t).Milliseconds())
+			}
+		})
 	}
 	if tnasNPM {
 		wg.Go(func() { p.tnasNPMOK = check(c.Server.NPMCheckHost, c.TNASIP) })
@@ -758,14 +768,7 @@ func (a *Agent) record(p probe) {
 		if _, checked := p.svcOK[sv.Name]; !checked {
 			continue // added after this check started: the next one sees it
 		}
-		switch {
-		case p.npmOK:
-			add(sv.Name, status[p.svcOK[sv.Name]], p.svcMs[sv.Name])
-		case p.serverPing: // case 2.3: the services were not checked
-			add(sv.Name, "unknown", 0)
-		default:
-			add(sv.Name, "down", 0)
-		}
+		add(sv.Name, status[p.svcOK[sv.Name]], p.svcMs[sv.Name]) // false with the NPM down, unless its own IP answers
 	}
 }
 
@@ -839,12 +842,12 @@ func (a *Agent) evaluate(p probe) {
 		dnsSeen(&st.ServerDNSOK, p.serverDNS, "servidor")
 	}
 
-	known := a.serverNPM(p)
+	a.serverNPM(p)
 	for _, sv := range c.Services {
 		if _, checked := p.svcOK[sv.Name]; !checked {
 			continue // added after this check started: not failed, just not checked yet
 		}
-		a.step(sv, a.svc(sv.Name), known, p.svcOK[sv.Name])
+		a.step(sv, a.svc(sv.Name), p.svcOK[sv.Name])
 	}
 	a.standIn()
 	if st.TNASNPM.Snapshot != "" {
@@ -900,9 +903,10 @@ func (a *Agent) standIn() {
 	}
 }
 
-// serverNPM applies R2: the server's NPM first. Down with the server alive is
-// case 2.3: warn only and leave the services alone (known=false).
-func (a *Agent) serverNPM(p probe) (known bool) {
+// serverNPM applies R2: the server's NPM first. It is the only path to the
+// services, so down it takes them all with it, the server alive or not;
+// with the server alive the warning says it is the NPM, not the apps.
+func (a *Agent) serverNPM(p probe) {
 	st := &a.st
 	st.ServerNPMOK, st.ServerUp = p.npmOK, p.npmOK || p.serverPing
 	switch {
@@ -927,19 +931,15 @@ func (a *Agent) serverNPM(p probe) (known bool) {
 			a.alert("", "NPM do servidor voltou")
 		}
 		st.NPMFailSince, st.NPMAlerted = time.Time{}, false
-		return true
+		return
 	}
 	if st.NPMFailSince.IsZero() {
 		st.NPMFailSince = a.now
 	}
-	if !p.serverPing {
-		return true
-	}
-	if !st.NPMAlerted && a.now.Sub(st.NPMFailSince) >= minutes(a.cfg.NPM.AlertAfterMin) {
+	if p.serverPing && !st.NPMAlerted && a.now.Sub(st.NPMFailSince) >= minutes(a.cfg.NPM.AlertAfterMin) {
 		st.NPMAlerted = true
-		a.alert("", "NPM do servidor em falha com o servidor vivo: os serviços ficam no servidor, sem failover")
+		a.alert("", "NPM do servidor em falha com o servidor vivo: sem ele nenhum serviço responde, cada um passa ao TNAS no fim da sua espera")
 	}
-	return false
 }
 
 // set moves a service to state and saves at once: the page shows every
@@ -958,25 +958,19 @@ func (a *Agent) set(s *SvcState, state string) {
 	case Normal:
 		s.OnTNAS, s.LastErr, s.Steps, s.CopyMAC = time.Time{}, "", nil, ""
 	case Error:
-		s.OnTNAS = time.Time{}
+		s.OnTNAS, s.CopyMAC = time.Time{}, "" // the copy is torn down: nothing of it holds the IP
 	}
 	a.save()
 }
 
-// step advances one service; known=false means its server side could not be checked.
+// step advances one service; ok is whether it answered on the server.
 //
 //nolint:gocognit // the state machine: one case per state reads better than split up
-func (a *Agent) step(sv Service, s *SvcState, known, ok bool) {
+func (a *Agent) step(sv Service, s *SvcState, ok bool) {
 	auto := a.cfg.Mode == "auto"
-	if known {
-		s.ServerOK = ok
-	}
+	s.ServerOK = ok
 	switch s.State {
 	case Normal:
-		if !known { // nothing is known of the service: a failure seen before does not keep counting
-			s.FailSince, s.Observed = time.Time{}, false
-			return
-		}
 		if ok || a.inMaint(s) {
 			if ok && !s.FailSince.IsZero() {
 				a.event(sv.Name, "recuperou no servidor antes do failover")
@@ -1003,10 +997,6 @@ func (a *Agent) step(sv Service, s *SvcState, known, ok bool) {
 	case FailingOver:
 		a.failover(sv, s)
 	case Active:
-		if !known {
-			s.OKSince = time.Time{}
-			return
-		}
 		if !ok {
 			s.OKSince = time.Time{}
 			return
@@ -1033,10 +1023,10 @@ func (a *Agent) step(sv Service, s *SvcState, known, ok bool) {
 		a.giveBack(sv, s)
 	case Error:
 		switch {
-		case known && ok: // healthy on the server again: clean up whatever is left and reset
+		case ok: // healthy on the server again: clean up whatever is left and reset
 			a.set(s, Returning)
 			a.giveBack(sv, s)
-		case known && auto && !a.inMaint(s) && a.now.Sub(s.Since) >= minutes(a.cfg.StartTimeoutMin):
+		case auto && !a.inMaint(s) && a.now.Sub(s.Since) >= minutes(a.cfg.StartTimeoutMin):
 			a.retryFailover(sv, s)
 		}
 	}
