@@ -30,7 +30,7 @@ export function serverPanel() {
     body: sec('Como é verificado', `<p>A cada ${st.check_interval_s} s o agente pede ${mono('https://' + st.npm_check_host)} e o endereço de cada serviço, ligado diretamente a ${mono(st.server_ip)}. Se o NPM falhar e o servidor responder a ping, só avisa: não há failover.</p>`)
       + sec('Estado', kv([
         ['NPM do servidor', st.server_npm_ok ? '<span class="ok-text">A responder</span>'
-          : `<span class="${st.npm_alerted ? 'warn-text' : 'bad-text'}">Em falha ${esc(ago(st.npm_fail_since))}${st.npm_alerted ? ', com o servidor vivo: aviso enviado' : ''}</span>`],
+          : `<span class="${st.npm_alerted ? 'warn-text' : 'bad-text'}">Em falha ${esc(ago(st.npm_fail_since))}${st.npm_alerted ? ', com o servidor vivo: aviso enviado, os serviços contam como em falha' : ''}</span>`],
         ['Servidor', !st.router_ok ? 'Por verificar' : st.server_up ? '<span class="ok-text">Responde</span>' : '<span class="bad-text">Não responde ao NPM nem a ping</span>'],
         ['Router', `${st.router_ok ? '<span class="ok-text">Acessível</span>' : '<span class="bad-text">Inacessível: o agente não decide nada</span>'} ${mono(st.router_ip)}`],
         ['Última verificação', `às ${esc(clockS(st.now))}`],
@@ -136,7 +136,7 @@ export function svcEditPanel() {
       ${field('host', 'Endereço', `<input name="host" value="${esc(v.host)}" placeholder="nome.${esc(st.dns_zone)}" spellcheck="false">`, 'O nome que os clientes usam. No failover passa a apontar para o TNAS.')}
       ${field('override_yaml', 'Override (opcional)', `<textarea name="override_yaml" rows="6" spellcheck="false" placeholder="services:&#10;  nome-no-compose:&#10;    profiles: [&quot;disabled&quot;]">${esc(panel.data.override)}</textarea>`,
         'Junta-se ao compose do espelho no failover, por exemplo para desligar um contentor. É verificado com docker compose antes de guardar.')}
-      ${field('require_free_ip', 'IP que tem de estar livre (opcional)', `<input name="require_free_ip" value="${esc(v.require_free_ip)}" spellcheck="false">`, 'Para serviços com IP próprio na LAN: a cópia não arranca se alguém já o usa.')}
+      ${field('require_free_ip', 'IP que tem de estar livre (opcional)', `<input name="require_free_ip" value="${esc(v.require_free_ip)}" spellcheck="false">`, 'Para serviços com IP próprio na LAN: enquanto o servidor responder nesse IP o serviço conta como a responder, e a cópia não arranca se alguém já o usa.')}
     </fieldset></div>
     <div class="sec"><h3>Quando</h3><fieldset>
       ${field('wait_min', 'Espera antes do failover', `<select name="wait_min">${optMinutes(v.wait_min, 1)}</select>`)}

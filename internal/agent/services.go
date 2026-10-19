@@ -24,7 +24,7 @@ type mirrorDir struct {
 // ones a service can be made of; the NPM's is not one.
 func (a *Agent) getMirror(w http.ResponseWriter, _ *http.Request) {
 	a.mu.Lock()
-	root := filepath.Join(a.cfg.Paths.MirrorSubvol, a.cfg.Paths.MirrorRoot)
+	root := a.cfg.mirrorRoot()
 	npm, ignored := a.cfg.NPM.Dir, a.cfg.Ignored
 	a.mu.Unlock()
 	out := []mirrorDir{}
@@ -157,7 +157,7 @@ func (a *Agent) postService(w http.ResponseWriter, r *http.Request) {
 			fieldErr(w, "dir", "tem de ser uma pasta dentro do espelho")
 			return
 		}
-		compose := filepath.Join(paths.MirrorSubvol, paths.MirrorRoot, dir, "docker-compose.yml")
+		compose := filepath.Join(a.cfg.mirrorRoot(), dir, "docker-compose.yml")
 		if !fileExists(compose) {
 			fieldErr(w, "dir", "não há docker-compose.yml nesta pasta do espelho")
 			return
@@ -215,7 +215,7 @@ func (a *Agent) postService(w http.ResponseWriter, r *http.Request) {
 		fieldErr(w, "dir", "tem de ser uma pasta dentro do espelho")
 		return
 	}
-	compose := filepath.Join(next.Paths.MirrorSubvol, next.Paths.MirrorRoot, sv.Dir, "docker-compose.yml")
+	compose := filepath.Join(next.mirrorRoot(), sv.Dir, "docker-compose.yml")
 	if !fileExists(compose) {
 		fieldErr(w, "dir", "não há docker-compose.yml nesta pasta do espelho")
 		return

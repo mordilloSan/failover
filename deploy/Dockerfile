@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}"
 FROM docker:cli AS docker
 
 FROM alpine:3.24
-RUN apk add --no-cache btrfs-progs coreutils iputils-arping iputils-ping tzdata ca-certificates
+RUN apk add --no-cache btrfs-progs coreutils iputils-arping iputils-ping openssh-client tzdata ca-certificates
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 COPY --from=build /failover-agent /usr/local/bin/failover-agent

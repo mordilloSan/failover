@@ -64,8 +64,9 @@ type Config struct {
 		Dir           string `yaml:"dir"`
 		AlertAfterMin int    `yaml:"alert_after_min"`
 	} `yaml:"npm"`
-	Services    []Service `yaml:"services"`
-	Ignored     []string  `yaml:"ignored,omitempty"` // folders of the mirror the discovery and its watch leave out
+	Mirror      MirrorSync `yaml:"mirror"` // the mirror by btrfs send over SSH (sync.go)
+	Services    []Service  `yaml:"services"`
+	Ignored     []string   `yaml:"ignored,omitempty"` // folders of the mirror the discovery and its watch leave out
 	Maintenance struct {
 		DefaultExpiryMin int `yaml:"default_expiry_min"`
 	} `yaml:"maintenance"`
@@ -149,6 +150,9 @@ func (c *Config) validate() error {
 		}
 	}
 	if err := c.Email.validate(); err != nil {
+		return err
+	}
+	if err := c.Mirror.validate(); err != nil {
 		return err
 	}
 	if at := c.Nightly.PrepullAt; at != "" {
@@ -331,6 +335,9 @@ type State struct {
 	MirrorStale    bool              `json:"mirror_stale,omitempty"`  // told that it stopped
 	MirrorSeen     map[string]int64  `json:"mirror_seen,omitempty"`   // folder → its compose's mtime, an hour ago
 	MirrorNew      []string          `json:"mirror_new,omitempty"`    // new folders, not protected, until seen in the page
+	SyncDay        string            `json:"sync_day,omitempty"`      // the day whose sync at mirror.at ran (or was started)
+	LastSync       time.Time         `json:"last_sync,omitzero"`      // the last snapshot received
+	SyncMsg        string            `json:"sync_msg,omitempty"`      // why the last sync failed
 	Verdict        Verdict           `json:"verdict,omitzero"`
 	NPMAlerted     bool              `json:"npm_alerted,omitempty"`
 	RouterChanged  time.Time         `json:"router_changed,omitzero"` // since when the router answers or not
@@ -365,6 +372,7 @@ type System interface {
 	Answers(ip, zone string) error // the DNS server at ip answers for its own zone
 	SendMail(m Mail) error
 	PortFree(proto, addr string) error // nothing listens on addr of this host (the agent runs with its network)
+	Pipe(from, to []string) error      // from | to, as a shell would (ssh … | btrfs receive)
 }
 
 type Agent struct {
@@ -402,6 +410,7 @@ type Agent struct {
 	pulling    atomic.Bool
 	pullNow    bool // set at start: the next tick pulls whatever the hour, so missing or outdated images come down at once
 	scanning   atomic.Bool
+	syncing    atomic.Bool // a mirror sync runs (sync.go)
 	rescan     atomic.Bool // asked for while a scan ran
 	beats      map[string][]Beat
 	tnasSeen   bool // last TNAS ping, so a change is logged once
@@ -543,6 +552,7 @@ func (a *Agent) Tick(now time.Time) {
 	a.evaluate(p)
 	a.stopIdleNPM()
 	a.nightly()
+	a.syncDue()
 	a.watchMirror()
 	a.flushAlerts()
 	if a.now.Format(time.DateOnly) != a.trimmedOn {
@@ -645,9 +655,9 @@ func (a *Agent) probe() probe {
 	a.mu.Lock()
 	c := a.cfg // the UI replaces a.cfg and never edits it in place, so this copy is safe to read
 	tnasNPM := a.st.TNASNPM.Snapshot != ""
-	macs := map[string]string{} // service → its copy's MAC, for an ACTIVE one with its own IP
+	macs := map[string]string{} // service → its copy's MAC, for one with its own IP whose copy is up
 	for _, sv := range c.Services {
-		if s := a.st.Services[sv.Name]; s != nil && s.State == Active && sv.RequireFreeIP != "" && s.CopyMAC != "" {
+		if s := a.st.Services[sv.Name]; s != nil && sv.RequireFreeIP != "" && s.CopyMAC != "" {
 			macs[sv.Name] = s.CopyMAC
 		}
 	}
@@ -683,15 +693,14 @@ func (a *Agent) probe() probe {
 	p.serverPing = !p.npmOK && ping // used only when the NPM failed
 	ok, ms := make([]bool, len(c.Services)), make([]int, len(c.Services))
 	var wg sync.WaitGroup
-	if p.npmOK { // with the NPM down every service is down
-		for i, sv := range c.Services {
-			wg.Go(func() {
-				ok[i], ms[i] = timed(sv.Host, c.Server.IP)
-				if mac := macs[sv.Name]; ok[i] && mac != "" {
-					ok[i] = a.serverHoldsIP(c.LANIface, sv.RequireFreeIP, mac)
-				}
-			})
-		}
+	for i, sv := range c.Services {
+		wg.Go(func() {
+			var viaNPM bool
+			if p.npmOK { // with the NPM down every service is down for the clients
+				viaNPM, ms[i] = timed(sv.Host, c.Server.IP)
+			}
+			ok[i], ms[i] = a.ownIPCheck(c, sv, macs[sv.Name], viaNPM, ms[i])
+		})
 	}
 	if tnasNPM {
 		wg.Go(func() { p.tnasNPMOK = check(c.Server.NPMCheckHost, c.TNASIP) })
@@ -707,6 +716,24 @@ func (a *Agent) probe() probe {
 		p.svcOK[sv.Name], p.svcMs[sv.Name] = ok[i], ms[i]
 	}
 	return p
+}
+
+// ownIPCheck settles a service with its own IP (require_free_ip): it is up
+// for what uses that IP (UniFi's devices) while the server's container
+// answers ARP there, whatever the NPM says; with the copy holding the IP
+// (mac known) only another MAC is the server's. Others keep the NPM's answer.
+func (a *Agent) ownIPCheck(c Config, sv Service, mac string, viaNPM bool, ms int) (bool, int) {
+	ip := sv.RequireFreeIP
+	switch {
+	case ip == "":
+		return viaNPM, ms
+	case mac != "":
+		return viaNPM && a.serverHoldsIP(c.LANIface, ip, mac), ms
+	case viaNPM:
+		return true, ms
+	}
+	t := time.Now()
+	return a.serverHoldsIP(c.LANIface, ip, ""), int(time.Since(t).Milliseconds())
 }
 
 var reMAC = regexp.MustCompile(`\[([0-9A-Fa-f:]{17})\]`)
@@ -758,14 +785,7 @@ func (a *Agent) record(p probe) {
 		if _, checked := p.svcOK[sv.Name]; !checked {
 			continue // added after this check started: the next one sees it
 		}
-		switch {
-		case p.npmOK:
-			add(sv.Name, status[p.svcOK[sv.Name]], p.svcMs[sv.Name])
-		case p.serverPing: // case 2.3: the services were not checked
-			add(sv.Name, "unknown", 0)
-		default:
-			add(sv.Name, "down", 0)
-		}
+		add(sv.Name, status[p.svcOK[sv.Name]], p.svcMs[sv.Name]) // false with the NPM down, unless its own IP answers
 	}
 }
 
@@ -839,12 +859,12 @@ func (a *Agent) evaluate(p probe) {
 		dnsSeen(&st.ServerDNSOK, p.serverDNS, "servidor")
 	}
 
-	known := a.serverNPM(p)
+	a.serverNPM(p)
 	for _, sv := range c.Services {
 		if _, checked := p.svcOK[sv.Name]; !checked {
 			continue // added after this check started: not failed, just not checked yet
 		}
-		a.step(sv, a.svc(sv.Name), known, p.svcOK[sv.Name])
+		a.step(sv, a.svc(sv.Name), p.svcOK[sv.Name])
 	}
 	a.standIn()
 	if st.TNASNPM.Snapshot != "" {
@@ -900,9 +920,10 @@ func (a *Agent) standIn() {
 	}
 }
 
-// serverNPM applies R2: the server's NPM first. Down with the server alive is
-// case 2.3: warn only and leave the services alone (known=false).
-func (a *Agent) serverNPM(p probe) (known bool) {
+// serverNPM applies R2: the server's NPM first. It is the only path to the
+// services, so down it takes them all with it, the server alive or not;
+// with the server alive the warning says it is the NPM, not the apps.
+func (a *Agent) serverNPM(p probe) {
 	st := &a.st
 	st.ServerNPMOK, st.ServerUp = p.npmOK, p.npmOK || p.serverPing
 	switch {
@@ -927,19 +948,15 @@ func (a *Agent) serverNPM(p probe) (known bool) {
 			a.alert("", "NPM do servidor voltou")
 		}
 		st.NPMFailSince, st.NPMAlerted = time.Time{}, false
-		return true
+		return
 	}
 	if st.NPMFailSince.IsZero() {
 		st.NPMFailSince = a.now
 	}
-	if !p.serverPing {
-		return true
-	}
-	if !st.NPMAlerted && a.now.Sub(st.NPMFailSince) >= minutes(a.cfg.NPM.AlertAfterMin) {
+	if p.serverPing && !st.NPMAlerted && a.now.Sub(st.NPMFailSince) >= minutes(a.cfg.NPM.AlertAfterMin) {
 		st.NPMAlerted = true
-		a.alert("", "NPM do servidor em falha com o servidor vivo: os serviços ficam no servidor, sem failover")
+		a.alert("", "NPM do servidor em falha com o servidor vivo: sem ele nenhum serviço responde, cada um passa ao TNAS no fim da sua espera")
 	}
-	return false
 }
 
 // set moves a service to state and saves at once: the page shows every
@@ -958,25 +975,19 @@ func (a *Agent) set(s *SvcState, state string) {
 	case Normal:
 		s.OnTNAS, s.LastErr, s.Steps, s.CopyMAC = time.Time{}, "", nil, ""
 	case Error:
-		s.OnTNAS = time.Time{}
+		s.OnTNAS, s.CopyMAC = time.Time{}, "" // the copy is torn down: nothing of it holds the IP
 	}
 	a.save()
 }
 
-// step advances one service; known=false means its server side could not be checked.
+// step advances one service; ok is whether it answered on the server.
 //
 //nolint:gocognit // the state machine: one case per state reads better than split up
-func (a *Agent) step(sv Service, s *SvcState, known, ok bool) {
+func (a *Agent) step(sv Service, s *SvcState, ok bool) {
 	auto := a.cfg.Mode == "auto"
-	if known {
-		s.ServerOK = ok
-	}
+	s.ServerOK = ok
 	switch s.State {
 	case Normal:
-		if !known { // nothing is known of the service: a failure seen before does not keep counting
-			s.FailSince, s.Observed = time.Time{}, false
-			return
-		}
 		if ok || a.inMaint(s) {
 			if ok && !s.FailSince.IsZero() {
 				a.event(sv.Name, "recuperou no servidor antes do failover")
@@ -1003,10 +1014,6 @@ func (a *Agent) step(sv Service, s *SvcState, known, ok bool) {
 	case FailingOver:
 		a.failover(sv, s)
 	case Active:
-		if !known {
-			s.OKSince = time.Time{}
-			return
-		}
 		if !ok {
 			s.OKSince = time.Time{}
 			return
@@ -1033,10 +1040,10 @@ func (a *Agent) step(sv Service, s *SvcState, known, ok bool) {
 		a.giveBack(sv, s)
 	case Error:
 		switch {
-		case known && ok: // healthy on the server again: clean up whatever is left and reset
+		case ok: // healthy on the server again: clean up whatever is left and reset
 			a.set(s, Returning)
 			a.giveBack(sv, s)
-		case known && auto && !a.inMaint(s) && a.now.Sub(s.Since) >= minutes(a.cfg.StartTimeoutMin):
+		case auto && !a.inMaint(s) && a.now.Sub(s.Since) >= minutes(a.cfg.StartTimeoutMin):
 			a.retryFailover(sv, s)
 		}
 	}
@@ -1361,7 +1368,7 @@ func (a *Agent) snapshot(name string) (string, error) {
 	p := a.cfg.Paths
 	dst := filepath.Join(p.SnapshotsDir, "failover-"+name+"-"+a.now.Format("20060102-150405"))
 	_ = os.MkdirAll(p.SnapshotsDir, 0o755) // if this fails, btrfs says so
-	if err := a.copyMirror(p.MirrorSubvol, dst); err != nil {
+	if err := a.copyMirror(a.cfg.mirror(), dst); err != nil {
 		return "", err
 	}
 	return dst, nil
@@ -1532,16 +1539,18 @@ func (a *Agent) scanOnce() {
 	var mu sync.Mutex // guards stacks and missing: the stacks are read side by side
 	stacks := map[string]Stack{}
 	var missing []string
-	scan := func(name, dir, override string) {
-		st, miss := a.scanStack(c, name, dir, override, running[name])
+	scan := func(name, dir, override string, provided []string) []string {
+		st, miss, prov := a.scanStack(c, name, dir, override, running[name], provided)
 		mu.Lock()
 		stacks[name], missing = st, append(missing, miss...)
 		mu.Unlock()
+		return prov
 	}
+	// the NPM first: the networks its compose creates are external to the apps, and exist only while it runs
+	provided := scan("npm", c.NPM.Dir, "", nil)
 	var wg sync.WaitGroup
-	wg.Go(func() { scan("npm", c.NPM.Dir, "") })
 	for _, sv := range c.Services {
-		wg.Go(func() { scan(sv.Name, sv.Dir, sv.Override) })
+		wg.Go(func() { scan(sv.Name, sv.Dir, sv.Override, provided) })
 	}
 	wg.Wait()
 	slices.Sort(missing)
@@ -1565,16 +1574,18 @@ func (a *Agent) scanOnce() {
 
 // scanStack reads one stack's resolved compose: its images and whether the
 // TNAS has them, and what the TNAS lacks for it to start. missing are the
-// images it lacks, or the stack when its compose does not resolve.
-func (a *Agent) scanStack(c Config, name, dir, override string, running bool) (st Stack, missing []string) {
-	args := slices.Concat([]string{"compose", "-p", "failover-" + name}, c.files(c.Paths.MirrorSubvol, dir, override), []string{"config", "--format", "json"})
+// images it lacks, or the stack when its compose does not resolve. provided
+// are networks another copy creates, not to ask of the TNAS; the stack's own
+// come back.
+func (a *Agent) scanStack(c Config, name, dir, override string, running bool, provided []string) (st Stack, missing, own []string) {
+	args := slices.Concat([]string{"compose", "-p", "failover-" + name}, c.files(c.mirror(), dir, override), []string{"config", "--format", "json"})
 	out, err := a.sys.Output("docker", args...)
 	var info composeInfo
 	if err == nil {
 		info, err = analyzeCompose([]byte(out), c.LANIface)
 	}
 	if err != nil {
-		return Stack{Err: err.Error()}, []string{name + " (compose ilegível)"}
+		return Stack{Err: err.Error()}, []string{name + " (compose ilegível)"}, nil
 	}
 	for _, ref := range info.Images {
 		img := Image{Ref: ref, NoPull: info.NoPull[ref]}
@@ -1591,16 +1602,22 @@ func (a *Agent) scanStack(c Config, name, dir, override string, running bool) (s
 		}
 		st.Images = append(st.Images, img)
 	}
-	st.Notes = a.tnasNotes(info, running)
-	return st, missing
+	st.Notes = a.tnasNotes(info, running, provided)
+	return st, missing, info.Provided
 }
 
 // tnasNotes is what the TNAS lacks for a stack to start there: an external
 // network it does not have, a port it publishes that something already
-// holds. A running copy holds its own ports, so running skips them.
-func (a *Agent) tnasNotes(info composeInfo, running bool) []string {
+// holds. A running copy holds its own ports, so running skips them. The
+// networks the NPM copy creates (provided) are missing between failovers by
+// design: creating them by hand would leave the NPM's compose networks it
+// did not make.
+func (a *Agent) tnasNotes(info composeInfo, running bool, provided []string) []string {
 	var notes []string
 	for _, n := range info.External {
+		if slices.Contains(provided, n) {
+			continue
+		}
 		if a.sys.Run("docker", "network", "inspect", n) != nil {
 			notes = append(notes, "a rede "+n+" não existe no TNAS: cria-a com docker network create "+n)
 		}
@@ -1649,7 +1666,7 @@ func (a *Agent) nightly() {
 	if due { // a start before prepull_at leaves the night's pull, after the mirror, still to do
 		a.st.LastPull = day
 	}
-	root := a.cfg.Paths.MirrorSubvol
+	root := a.cfg.mirror()
 	jobs := [][]string{slices.Concat([]string{"compose", "-p", "failover-npm"}, a.cfg.files(root, a.cfg.NPM.Dir, ""), []string{"pull", "-q"})}
 	for _, sv := range a.cfg.Services {
 		jobs = append(jobs, slices.Concat([]string{"compose", "-p", "failover-" + sv.Name}, a.cfg.files(root, sv.Dir, sv.Override), []string{"pull", "-q"}))
@@ -1842,6 +1859,7 @@ func (a *Agent) publish() {
 		MirrorChanged    time.Time `json:"mirror_changed,omitzero"`
 		MirrorStale      bool      `json:"mirror_stale"`
 		MirrorNew        []string  `json:"mirror_new"`
+		Mirror           any       `json:"mirror"`
 		Verdict          Verdict   `json:"verdict"`
 	}{
 		a.now, Version, userOf(a.creds.Load()), a.cfg.Mode, a.cfg.CheckIntervalS, a.cfg.StartTimeoutMin, a.cfg.Maintenance.DefaultExpiryMin, a.cfg.hasToken(), a.creds.Load() != nil && a.creds.Load().APITokenHash != "", a.cfg.DNS.APIURL,
@@ -1849,7 +1867,7 @@ func (a *Agent) publish() {
 		a.st.TNASNPM, a.st.MaintUntil, a.st.LastPull, a.cfg.Nightly.PrepullAt, a.cfg.Server.NPMCheckHost,
 		a.st.Images, a.st.ImagesAt, a.scanning.Load(), a.cfg.DNS.Zone, a.beats, svcs, recent,
 		settingsView(&a.cfg), a.st.SetupPending, a.listening, certView{names, notAfter},
-		a.st.MirrorChanged, a.st.MirrorStale, a.st.MirrorNew, a.st.Verdict,
+		a.st.MirrorChanged, a.st.MirrorStale, a.st.MirrorNew, a.mirrorView(), a.st.Verdict,
 	})
 	a.view.Store(&view{b, gzipBytes(b)})
 }

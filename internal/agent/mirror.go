@@ -37,6 +37,13 @@ func (a *Agent) watchMirror() {
 // from data that old.
 func (a *Agent) mirrorGeneration() {
 	st := &a.st
+	if a.cfg.Mirror.on() { // the sync moves MirrorChanged itself: only the stale check here
+		if st.MirrorChanged.IsZero() {
+			st.MirrorChanged = a.now
+		}
+		a.mirrorStale()
+		return
+	}
 	since := st.MirrorGen
 	if since == 0 {
 		since = 1 << 62 // the first look: only the marker, not every file of the mirror
@@ -65,10 +72,16 @@ func (a *Agent) mirrorGeneration() {
 		st.MirrorChanged, st.MirrorStale = a.now, false
 		return
 	}
+	a.mirrorStale()
+}
+
+// mirrorStale tells once that the mirror stopped moving for mirror_stale_days.
+func (a *Agent) mirrorStale() {
+	st := &a.st
 	days := cmp.Or(a.cfg.Paths.MirrorStaleDays, 2)
 	if !st.MirrorStale && a.now.Sub(st.MirrorChanged) >= time.Duration(days)*24*time.Hour {
 		st.MirrorStale = true
-		a.alert("", fmt.Sprintf("o espelho não muda desde %s: o backup do TOS parou? Um failover arrancaria com os dados desse dia", st.MirrorChanged.Format("02/01 15:04")))
+		a.alert("", fmt.Sprintf("o espelho não muda desde %s: o backup do TOS ou a sincronização parou? Um failover arrancaria com os dados desse dia", st.MirrorChanged.Format("02/01 15:04")))
 	}
 }
 
@@ -76,7 +89,7 @@ func (a *Agent) mirrorGeneration() {
 // each one changed, with what it saw an hour ago.
 func (a *Agent) mirrorFolders() {
 	c, st := &a.cfg, &a.st
-	root := filepath.Join(c.Paths.MirrorSubvol, c.Paths.MirrorRoot)
+	root := c.mirrorRoot()
 	if _, err := os.Stat(root); err != nil {
 		return // not there (being mounted, a wrong path): the settings' checks say so
 	}
@@ -131,7 +144,7 @@ func (a *Agent) snapshotTest(c Config) error {
 		return fmt.Errorf("snapshot de teste do espelho falhou (a pasta dos snapshots tem de estar num subvolume btrfs, no mesmo volume do espelho): %w", err)
 	}
 	// one file is enough to prove the reflink (same btrfs volume); the mirror itself is not copied
-	err := a.sys.Run("cp", "--reflink=always", filepath.Join(c.Paths.MirrorSubvol, c.Paths.MirrorRoot, c.NPM.Dir, "docker-compose.yml"), test+"/")
+	err := a.sys.Run("cp", "--reflink=always", filepath.Join(c.mirrorRoot(), c.NPM.Dir, "docker-compose.yml"), test+"/")
 	if derr := a.sys.Run("btrfs", "subvolume", "delete", test); err == nil {
 		err = derr
 	}

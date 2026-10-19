@@ -1,7 +1,7 @@
 // The settings page and the discovery.
 import {$, cap, chip, confirmAction, day, esc, icon, kv, mono, paint, painted, pending, plural, post, readErr, sentence, st, toLogin, toast} from './core.js';
 import {repaintSetup} from './setup.js';
-import {currentTab, refresh} from './main.js';
+import {currentTab, hashParts, refresh} from './main.js';
 
 // Settings, as a page. Only values that rarely change go in the markup, so
 // the 5 s refresh does not repaint it while the token is being typed.
@@ -37,6 +37,11 @@ export const SECTIONS = [
     {k: 'email.password', l: 'Password', s: true, h: 'No Gmail, uma password de aplicação.'},
     {k: 'email.from', l: 'Remetente', h: 'Vazio: o utilizador.'},
     {k: 'email.to', l: 'Enviar para', h: 'Vazio: o utilizador.'}]},
+  {id: 'espelho', title: 'Espelho', fields: [
+    {k: 'mirror.server', l: 'Servidor', h: 'utilizador@IP do servidor, por SSH. Vazio: o espelho é o backup do TOS, como até aqui.'},
+    {k: 'mirror.subvolume', l: 'Subvolume no servidor', h: 'O subvolume btrfs com as pastas dos composes, por exemplo /home/miguel/docker. Só entra no script.'},
+    {k: 'mirror.at', l: 'Hora', t: 'time', h: 'A sincronização diária. Vazio: só à mão.'},
+    {k: 'mirror.keep', l: 'Snapshots a guardar no TNAS', n: 0, h: 'Os mais antigos apagam-se depois de cada sincronização. 0: 3.'}]},
   {id: 'noturna', title: 'Descarga noturna', fields: [
     {k: 'nightly.prepull_at', l: 'Hora', t: 'time', h: 'Descarrega as imagens em falta ou desatualizadas dos composes do espelho, a esta hora e ao arrancar o agente, e apaga as que substitui. Vazio desliga.'}]},
   {id: 'interface', title: 'Interface', fields: [
@@ -86,7 +91,30 @@ export function sectionHtml(sec) {
           <small class="set-help">Cria-o no Technitium em Administração → Sessões → Criar token, para um utilizador com direitos na zona.</small></label>
         <p class="bad-text token-err" role="alert"></p>
         <div class="form-foot"><button type="submit" class="btn contained">Testar e guardar</button></div></form></div>
-    ${failoverAppHtml()}` : ''}`;
+    ${failoverAppHtml()}` : ''}
+    ${sec.id === 'espelho' ? mirrorHtml() : ''}`;
+}
+
+// The sync's state, the agent's public key and the server's script, with the
+// line that ties the key to the script in the server's authorized_keys.
+export function mirrorHtml() {
+  const m = st.mirror || {};
+  if (!m.on) return `<div class="sec-sub"><p class="note-text">Com um servidor definido, o agente liga-se por SSH, o servidor tira um snapshot só de leitura do subvolume
+      e envia a diferença desde o anterior (${mono('btrfs send')}); o TNAS recebe-a como snapshot e o failover copia do mais recente. Nada fica à escuta no TNAS.</p></div>`;
+  const state = m.syncing ? chip('A sincronizar…', 'var(--info)', 'xs') : m.msg ? chip('Falhou', 'var(--error)', 'xs') : m.last ? chip('OK', 'var(--success)', 'xs') : chip('Nunca', 'var(--muted)', 'xs');
+  const auth = m.pubkey ? `restrict,from="${st.tnas_ip}",command="sudo /usr/local/sbin/failover-mirror" ${m.pubkey}` : '';
+  return `<div class="sec-sub">${kv([['Estado', state + (m.msg ? ` <span class="bad-text">${esc(sentence(m.msg))}</span>` : '')],
+      ['Último snapshot', m.last ? esc(day(m.last)) : '—'],
+      ['Snapshots no TNAS', m.snapshots?.length ? esc(m.snapshots.join(', ')) : 'nenhum: o failover usaria a pasta do espelho tal como está'],
+      ['Espelho em uso', mono(m.path || '')]])}
+    <div class="form-foot"><button type="button" class="btn" data-mirror-test>${icon('refresh')}Testar ligação</button>
+      <button type="button" class="btn${m.syncing ? ' busy' : ''}" data-mirror-sync ${m.syncing ? 'disabled' : ''}>${icon('restore')}Sincronizar agora</button></div>
+    <ul class="checks" id="mirrorChecks"></ul></div>
+    <div class="sec-sub"><p class="note-text">No servidor, uma vez: cria o utilizador ${mono('failover')}, guarda o script em ${mono('/usr/local/sbin/failover-mirror')} (executável),
+      dá-lhe ${mono('failover ALL=(root) NOPASSWD: /usr/local/sbin/failover-mirror')} no sudoers, e põe esta linha em ${mono('~failover/.ssh/authorized_keys')}.
+      A chave só consegue correr o script, só a partir do TNAS, sem shell nem túneis.</p>
+    <label class="pw-field">Linha para o authorized_keys <textarea readonly rows="3" spellcheck="false" data-select>${esc(auth)}</textarea></label>
+    <div class="form-foot"><a class="btn" href="api/mirror/script" download="failover-mirror">${icon('download')}Descarregar o script</a></div></div>`;
 }
 
 // The zone's * as a record of the Technitium's Failover app: what the readiness
@@ -115,9 +143,15 @@ export function paintGuarded(elId, html) {
 }
 export const paintSec = (id, html) => paintGuarded(`set-${id}`, html);
 export function repaintSec(id) { painted[`set-${id}`] = null; renderSettings(); repaintSetup(); }
+// One section at a time: the one in the address (#/definicoes/dns), Geral by default.
+export function showSec() {
+  const sub = $(`set-${hashParts()[1]}`) ? hashParts()[1] : 'geral';
+  document.querySelectorAll('.set-sec').forEach(s => { s.hidden = s.id !== `set-${sub}`; });
+}
 export function renderSettings() {
   if (!$('set-geral')) {
     $('settingsBody').innerHTML = ['geral', 'servicos', ...SECTIONS.map(x => x.id), 'conta'].map(id => `<section class="card set-sec" id="set-${id}"></section>`).join('');
+    showSec();
   }
   const mode = pending.has('mode') ? pending.get('mode') : st.mode;
   const iv = pending.has('interval') ? pending.get('interval') : st.check_interval_s;
@@ -336,6 +370,25 @@ export async function runChecks(id) {
   secChecks[id] = list.map(c => `<li class="${c.ok ? 'ok-text' : 'warn-text'}">${icon(c.ok ? 'check' : 'alert')}<span>${esc(sentence(c.msg))}</span></li>`).join('');
   repaintSec(id);
 }
+export async function mirrorTest() {
+  const ul = $('mirrorChecks');
+  ul.innerHTML = '<li class="muted">A ligar ao servidor…</li>';
+  try {
+    const r = toLogin(await fetch('api/mirror/test', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}));
+    if (!r.ok) throw new Error((await readErr(r)).error);
+    const list = await r.json();
+    ul.innerHTML = list.map(c => `<li class="${c.ok ? 'ok-text' : 'warn-text'}">${icon(c.ok ? 'check' : 'alert')}<span>${esc(sentence(c.msg))}</span></li>`).join('');
+  } catch (err) {
+    ul.innerHTML = `<li class="warn-text">${icon('alert')}<span>${esc(sentence(err.message))}</span></li>`;
+  }
+}
+export async function mirrorSync() {
+  const r = toLogin(await fetch('api/mirror/sync', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}));
+  if (!r.ok) { toast(`Não foi possível: ${(await readErr(r)).error}`, false); return; }
+  toast('Sincronização iniciada: o resultado fica nos eventos');
+  await refresh();
+  repaintSec('espelho');
+}
 // Restart for a new address: Docker starts the agent again; open it where it now listens.
 export async function restartAgent() {
   const port = String(st.settings['ui.listen']).split(':').pop();
@@ -367,6 +420,8 @@ document.addEventListener('click', e => {
     return;
   }
   if (e.target.closest('[data-restart]')) restartAgent();
+  if (e.target.closest('[data-mirror-test]')) mirrorTest();
+  if (e.target.closest('[data-mirror-sync]')) mirrorSync();
   if (e.target.closest('[data-api-token]')) makeApiToken();
   e.target.closest('[data-select]')?.select();
 });

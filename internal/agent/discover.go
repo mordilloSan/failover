@@ -181,6 +181,7 @@ type composeInfo struct {
 	Images    []string          // the image of every service, sorted, once each (built ones by compose's name)
 	NoPull    map[string]string // image → why `docker compose pull` leaves it: built here, or pull_policy: never
 	External  []string          // external networks: they must exist on the TNAS
+	Provided  []string          // networks the compose creates itself: the NPM's *-proxy hub, external to the apps
 	Published []pubPort
 	Binds     []string // absolute sources of bind mounts
 	Named     []string // named volumes: they start empty on the TNAS and go on the return
@@ -214,10 +215,13 @@ func analyzeCompose(js []byte, lanIface string) (composeInfo, error) {
 		}
 		if net.External {
 			info.External = append(info.External, cmp.Or(net.Name, n))
+		} else {
+			info.Provided = append(info.Provided, cmp.Or(net.Name, n))
 		}
 	}
 	slices.Sort(info.macvlans)
 	slices.Sort(info.External)
+	slices.Sort(info.Provided)
 	for _, k := range slices.Sorted(maps.Keys(c.Services)) {
 		info.addService(c.Name, k, c.Services[k])
 	}
@@ -567,7 +571,7 @@ func (a *Agent) discover() discovery {
 	var lan *net.IPNet
 	d.Network.TNASIP, d.Network.LANIface, lan = lanOf(a.ifaces(), net.ParseIP(d.Network.RouterIP), routeIface)
 
-	root := filepath.Join(c.Paths.MirrorSubvol, c.Paths.MirrorRoot)
+	root := c.mirrorRoot()
 	d.Mirror.Root = root
 	_, err := os.Stat(root)
 	d.Mirror.Found = err == nil
@@ -583,7 +587,8 @@ func (a *Agent) discover() discovery {
 	d.Network.ServerIP = voted
 	a.discoverDNS(c, hosts, &d)
 	assigned := assignHosts(hosts, infos, voted)
-	if npm, err := a.resolveCompose(root, c.NPM.Dir, ""); err == nil {
+	npm, err := a.resolveCompose(root, c.NPM.Dir, "") // unreadable: no names, no networks
+	if err == nil {
 		for _, h := range hosts {
 			if h.Port == 81 || npm.Names[h.Server] { // the NPM's own admin
 				d.Network.NPMCheckHost = h.Domains[0]
@@ -616,7 +621,7 @@ func (a *Agent) discover() discovery {
 		}
 		s.Host, s.Hosts = as.host, as.all
 		s.OverrideYAML, s.RequireFreeIP = info.overrideFor(as.keys), info.FreeIP
-		s.Notes = slices.Concat(info.Notes, as.notes, dataNotes(info, c.Paths.MirrorSubvol), a.tnasNotes(info, running[s.Name]))
+		s.Notes = slices.Concat(info.Notes, as.notes, dataNotes(info, c.mirror()), a.tnasNotes(info, running[s.Name], npm.Provided))
 		if s.Host == "" && len(hosts) > 0 {
 			s.Notes = append(s.Notes, "nenhum proxy host do NPM aponta para este compose: o agente só vigia pelo NPM, não o consegue proteger; se é um auxiliar de outro serviço, ignora-o")
 		}

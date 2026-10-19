@@ -8,7 +8,7 @@ A cada verificação (60 s por defeito), o agente pede `https://<serviço>` ao N
 
 1. Um serviço que falha durante a **espera antes do failover** (2 min por defeito) passa para o TNAS: snapshot do espelho, as imagens em falta descarregadas, `docker compose up` da cópia, verificação da cópia pelo NPM do TNAS (a cada 5 s, até responder) e registo DNS. Cada passo fica com a hora e aparece na página enquanto acontece.
 2. Quando volta a responder no servidor durante a **estabilidade antes do regresso** (2 min), o agente repõe o DNS e remove a cópia e o snapshot.
-3. Com o router em baixo, o agente não decide nada. Com o NPM do servidor em baixo mas o servidor vivo, os serviços ficam no servidor e o agente avisa.
+3. Com o router em baixo, o agente não decide nada. O NPM do servidor é o único caminho para os serviços: em baixo, com o servidor vivo ou não, todos contam como em falha e cada um passa ao TNAS no fim da sua espera; com o servidor vivo o agente avisa ao fim de `npm.alert_after_min` que a falha é do NPM. Um serviço com IP próprio (`require_free_ip`, o UniFi) é a exceção: enquanto o servidor responder nesse IP conta como a responder, porque é o IP que os equipamentos usam e a cópia não o podia ocupar.
 4. Com o NPM do servidor sem resposta há 1 min, com o servidor ligado ou não, o NPM do TNAS liga-se, mesmo sem nenhum serviço em failover. A [app Failover do Technitium](#o--da-zona-no-technitium) manda então o resto dos nomes (`*`) para o TNAS: o que não vive no servidor, como a interface do TNAS ou do router, continua acessível, e o que só existe no servidor dá 502 em vez de ficar à espera. O NPM do TNAS desliga-se quando o NPM do servidor volta e nenhuma cópia precisa dele.
 5. Um failover que dá erro é tentado outra vez a cada `start_timeout_min` (10 min) enquanto o serviço não responder no servidor, em automático e fora de manutenção.
 
@@ -60,6 +60,18 @@ O agente só muda os nomes dos serviços que passa para o TNAS. O resto da zona 
 
 **Password perdida:** `docker exec failover-agent rm /config/user.yml && docker restart failover-agent`, e cria a conta outra vez nos 30 minutos seguintes, com o código novo que o agente escreve no arranque (`docker logs failover-agent`).
 
+### O espelho por btrfs send
+
+Em vez do backup do TOS por rsync, o agente pode trazer o espelho com `btrfs send`/`receive`. Precisa de a pasta dos composes no servidor ser um subvolume btrfs e de o servidor ter SSH.
+
+1. No servidor, cria o utilizador `failover` e guarda o script que a página dá em Definições → Espelho ("Descarregar o script") em `/usr/local/sbin/failover-mirror`, executável. O script tem o subvolume dentro; os snapshots ficam ao lado, em `.failover-snapshots`.
+2. Em `/etc/sudoers.d/failover`: `failover ALL=(root) NOPASSWD: /usr/local/sbin/failover-mirror`.
+3. Em `~failover/.ssh/authorized_keys`, a linha que a página mostra: a chave pública do agente com `restrict,from="<IP do TNAS>",command="sudo /usr/local/sbin/failover-mirror"`. Essa chave só corre o script, só a partir do TNAS, sem shell nem túneis; quem a tiver lê o subvolume, nada mais.
+4. Em Definições → Espelho, o servidor (`failover@192.168.1.66`), o subvolume, a hora e quantos snapshots guardar; "Testar ligação" prova a chave, o comando forçado, o sudo e o script numa só resposta, e diz se a pasta no servidor é um subvolume btrfs, o espaço livre lá, os snapshots de cada lado e se o espelho do TNAS está em btrfs; "Sincronizar agora" faz o primeiro envio, completo (demora o que demorar a copiar tudo; os seguintes só levam a diferença).
+5. Depois do primeiro snapshot recebido, desliga a tarefa de backup do TOS e, se `paths.mirror_root` apontava para uma pasta dentro do backup (`homelab`), põe-no como as pastas estão dentro do subvolume.
+
+Uma sincronização falhada apaga o snapshot parcial e fica nos eventos e na página; o espelho continua a ser o último bom. O aviso de espelho parado conta a partir do último snapshot recebido.
+
 ## Usar
 
 - **Página principal:** a topologia (clientes, servidor, TNAS, internet), os serviços e os eventos.
@@ -69,6 +81,7 @@ O agente só muda os nomes dos serviços que passa para o TNAS. O resto da zona 
 - **Versão:** ao lado do nome, no topo; leva à release no GitHub.
 - **Ícones:** o nome de um ícone do [dashboardicons.com](https://dashboardicons.com), ou o link da sua página. Vazio: o do nome ou da pasta.
 - **Pronto para failover:** depois de cada verificação das imagens (no arranque, na descarga noturna e quando a stack de um serviço muda), o agente testa o token do Technitium e a app Failover com o `*` da zona, faz um snapshot de teste do espelho e vê as imagens e o que o TNAS precisa para cada compose (redes externas, portas livres). A caixa do TNAS diz "Pronto para failover" ou quantos problemas há; um problema novo vai por email.
+- **Espelho por btrfs send (Definições → Espelho):** com um servidor definido, o agente liga-se por SSH ao servidor à hora marcada (e com "Sincronizar agora"), o servidor tira um snapshot só de leitura do subvolume dos composes e envia a diferença desde o anterior; o TNAS recebe-a como um snapshot só de leitura dentro de `paths.mirror_subvol`, nomeado pela hora, e o failover copia do mais recente. Um snapshot é um instante só, por isso as bases de dados chegam coerentes, ao contrário de um rsync de ficheiros em uso. Nada fica à escuta no TNAS: a ligação é só de saída. Ver [o espelho por btrfs send](#o-espelho-por-btrfs-send).
 - **Espelho:** de hora a hora o agente vê se o backup do TOS continua a escrever no espelho (`btrfs subvolume find-new`: ficheiros com dados novos) e se há pastas novas ou composes mudados. Espelho parado há mais de `mirror_stale_days` (2 por defeito), pasta nova ou compose mudado: email; a pasta nova aparece na página até a protegeres ou dispensares.
 - **Avisos por email:** o servidor em baixo (com a hora), failover e regresso (o assunto diz quantos serviços, quando e quanto tempo ficaram no TNAS), erro, NPM do servidor em falha, router, certificado inválido, descarga de imagens (noturna ou ao arrancar) falhada, em observação o que o agente faria, e o agente a reiniciar. Os de uma mesma verificação seguem num só email. Um envio falhado aparece logo nos eventos e tenta-se de novo durante um dia.
 - **Telemóvel:** no browser, "Adicionar ao ecrã inicial" instala a página. Para arrastar um serviço, segura-o meio segundo.
@@ -111,7 +124,7 @@ O agente só muda os nomes dos serviços que passa para o TNAS. O resto da zona 
 | Na cópia, um serviço não abre as próprias pastas (`Permission denied`, como a postgres ou o rabbitmq do unifi) | Vê se as pastas da cópia têm um `+` em `ls -l`: são as permissões das partilhas do TOS, que só deixam entrar o root e o dono de cada pasta. A cópia não as devia ter: é um subvolume novo, que não as herda, com os ficheiros copiados sem elas |
 | "Certificado de X inválido" | O serviço conta como a responder, sem failover (o TNAS serve o mesmo certificado). Renova o certificado no NPM |
 | Um serviço em ERROR | A cópia já foi removida. O agente tenta outra vez a cada 10 min enquanto o serviço não responder no servidor; entretanto podes corrigir o serviço (conta como estando em casa). A mensagem diz porquê (por exemplo, o IP da macvlan ocupado) |
-| "N problemas para um failover" | O painel do TNAS lista-os: token do Technitium, snapshot de teste, imagens em falta, uma rede externa que não existe no TNAS (`docker network create <rede>`), uma porta já ocupada |
+| "N problemas para um failover" | O painel do TNAS lista-os: token do Technitium, snapshot de teste, imagens em falta, uma rede externa que não existe no TNAS (`docker network create <rede>`; as que o compose do NPM cria, as `*-proxy`, não contam: aparecem com a cópia do NPM), uma porta já ocupada |
 | Com o servidor em baixo, um nome que não vive no servidor (TNAS, router) não abre | Vê o `*` da zona: tem de ser o registo APP da [app Failover](#o--da-zona-no-technitium). No painel do TNAS, o NPM do TNAS tem de estar "A servir" |
 | "O espelho não muda desde…" | O backup do TOS parou: vê a tarefa de backup no TOS. Um failover arrancaria com os dados desse dia |
 | "Os dados de /x não estão no espelho" | O compose monta uma pasta fora do espelho, ou um volume com nome: no TNAS a cópia arranca sem esses dados. Muda o compose para uma pasta dentro da pasta do serviço |

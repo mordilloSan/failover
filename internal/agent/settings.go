@@ -60,6 +60,10 @@ var settings = []setting{
 	str("email.from", "avisos", func(c *Config) *string { return &c.Email.From }),
 	str("email.to", "avisos", func(c *Config) *string { return &c.Email.To }),
 	str("nightly.prepull_at", "noturna", func(c *Config) *string { return &c.Nightly.PrepullAt }),
+	str("mirror.server", "espelho", func(c *Config) *string { return &c.Mirror.Server }),
+	str("mirror.subvolume", "espelho", func(c *Config) *string { return &c.Mirror.Subvolume }),
+	str("mirror.at", "espelho", func(c *Config) *string { return &c.Mirror.At }),
+	num("mirror.keep", "espelho", func(c *Config) *int { return &c.Mirror.Keep }),
 	str("ui.listen", "interface", func(c *Config) *string { return &c.UI.Listen }),
 }
 
@@ -245,7 +249,7 @@ func (a *Agent) postCheck(w http.ResponseWriter, r *http.Request) {
 		b, _ := os.ReadFile(c.DNS.TokenFile)
 		add("dns.zone", testToken(a.sys, c.DNS.APIURL, c.DNS.Zone, strings.TrimSpace(string(b))), "o Technitium responde para a zona "+c.DNS.Zone)
 	case "caminhos":
-		root := filepath.Join(c.Paths.MirrorSubvol, c.Paths.MirrorRoot)
+		root := c.mirrorRoot()
 		dir("paths.mirror_subvol", c.Paths.MirrorSubvol)
 		dir("paths.mirror_root", root)
 		dir("npm.dir", filepath.Join(root, c.NPM.Dir))
