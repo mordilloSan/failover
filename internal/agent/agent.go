@@ -695,22 +695,11 @@ func (a *Agent) probe() probe {
 	var wg sync.WaitGroup
 	for i, sv := range c.Services {
 		wg.Go(func() {
+			var viaNPM bool
 			if p.npmOK { // with the NPM down every service is down for the clients
-				ok[i], ms[i] = timed(sv.Host, c.Server.IP)
+				viaNPM, ms[i] = timed(sv.Host, c.Server.IP)
 			}
-			ip := sv.RequireFreeIP
-			if ip == "" {
-				return
-			}
-			// A service with its own IP is up for what uses that IP (UniFi's devices)
-			// while the server's container answers ARP there, whatever the NPM says.
-			if mac := macs[sv.Name]; mac != "" { // the copy holds the IP: only another MAC is the server's
-				ok[i] = ok[i] && a.serverHoldsIP(c.LANIface, ip, mac)
-			} else if !ok[i] {
-				t := time.Now()
-				ok[i] = a.serverHoldsIP(c.LANIface, ip, "")
-				ms[i] = int(time.Since(t).Milliseconds())
-			}
+			ok[i], ms[i] = a.ownIPCheck(c, sv, macs[sv.Name], viaNPM, ms[i])
 		})
 	}
 	if tnasNPM {
@@ -727,6 +716,24 @@ func (a *Agent) probe() probe {
 		p.svcOK[sv.Name], p.svcMs[sv.Name] = ok[i], ms[i]
 	}
 	return p
+}
+
+// ownIPCheck settles a service with its own IP (require_free_ip): it is up
+// for what uses that IP (UniFi's devices) while the server's container
+// answers ARP there, whatever the NPM says; with the copy holding the IP
+// (mac known) only another MAC is the server's. Others keep the NPM's answer.
+func (a *Agent) ownIPCheck(c Config, sv Service, mac string, viaNPM bool, ms int) (bool, int) {
+	ip := sv.RequireFreeIP
+	switch {
+	case ip == "":
+		return viaNPM, ms
+	case mac != "":
+		return viaNPM && a.serverHoldsIP(c.LANIface, ip, mac), ms
+	case viaNPM:
+		return true, ms
+	}
+	t := time.Now()
+	return a.serverHoldsIP(c.LANIface, ip, ""), int(time.Since(t).Milliseconds())
 }
 
 var reMAC = regexp.MustCompile(`\[([0-9A-Fa-f:]{17})\]`)

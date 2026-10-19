@@ -91,9 +91,9 @@ func (a *Agent) mirrorKey() string {
 // server's authorized_keys gets.
 func (a *Agent) ensureKey() (pub string, err error) {
 	key := a.mirrorKey()
-	if _, err := os.Stat(key); err != nil {
-		if err := a.sys.Run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "failover-agent", "-f", key); err != nil {
-			return "", fmt.Errorf("criar a chave: %w", err)
+	if _, statErr := os.Stat(key); statErr != nil {
+		if kerr := a.sys.Run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "failover-agent", "-f", key); kerr != nil {
+			return "", fmt.Errorf("criar a chave: %w", kerr)
 		}
 	}
 	b, err := os.ReadFile(key + ".pub")
