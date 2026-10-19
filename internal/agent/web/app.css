@@ -134,10 +134,9 @@ input[type=number]:hover { border-color: color-mix(in srgb, var(--text), transpa
 .settings { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 20px; align-items: start; }
 .toc { position: sticky; top: 84px; display: grid; gap: 2px; }
 .toc a { padding: 7px 12px; border-radius: 8px; color: var(--muted); text-decoration: none; }
-.toc a:hover { color: var(--text); background: color-mix(in srgb, var(--text), transparent 92%); }
+.toc a:hover { color: var(--text); } /* the hover has no background: only the current section looks selected */
 .toc a[aria-current] { color: var(--text); background: color-mix(in srgb, var(--text), transparent 88%); }
 #settingsBody { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-.set-sec { scroll-margin-top: 84px; }
 .set-sec h2 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
 .set-form fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 14px; min-width: 0; }
 .set-field { display: grid; grid-template-columns: 240px minmax(0, 1fr); column-gap: 16px; row-gap: 4px; align-items: center; }
@@ -493,13 +492,13 @@ dialog.sheet[open]::backdrop { animation: fade-in .32s ease; }
 .note-text { color: var(--muted) !important; font-size: 12.5px; margin-top: 8px; }
 
 @media (max-width: 860px) {
-  .set-sec { scroll-margin-top: 124px; } /* the sticky header takes two lines here */
   .ev, .sheet .ev { grid-template-columns: 14px auto minmax(0, 1fr); row-gap: 2px; }
   .ev p { grid-column: 2 / -1; }
   .settings { grid-template-columns: minmax(0, 1fr); }
   .set-field { grid-template-columns: minmax(0, 1fr); }
   .set-help, .field-err { grid-column: 1; }
-  .toc { display: none; }
+  .toc { position: static; grid-auto-flow: column; justify-content: start; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
+  .toc a { white-space: nowrap; }
   .lower { grid-template-columns: minmax(0, 1fr); }
   .ev-card .timeline { max-height: 60vh; }
   /* one column: the clients, the three hops side by side, then the server over the TNAS */

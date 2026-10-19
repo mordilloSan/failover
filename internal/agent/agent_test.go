@@ -925,14 +925,16 @@ func TestScanImages(t *testing.T) {
 	a, f := setup(t)
 	buf := logs(t)
 	f.busy, f.noIP = map[string]bool{"tcp :2283": true}, map[string]bool{"10.0.0.66": true}
-	f.failCmd = []string{"docker network inspect proxy"}
+	f.failCmd = []string{"docker network inspect proxy", "docker network inspect immich-proxy"}
 	f.outs = map[string]string{
-		// two services on redis:7: listed once; an external network the TNAS lacks; a port taken
+		// two services on redis:7: listed once; two external networks the TNAS lacks, one of them the NPM copy's; a port taken
 		"docker compose -p failover-immich": `{"name":"failover-immich","services":{"server":{"image":"ghcr.io/immich-app/immich-server:v2","ports":[{"published":"2283","protocol":"tcp"},{"published":"2375","host_ip":"10.0.0.66","protocol":"tcp"}]},
-			"redis":{"image":"redis:7"},"cache":{"image":"redis:7"}},"networks":{"proxy":{"name":"proxy","external":true}}}`,
+			"redis":{"image":"redis:7"},"cache":{"image":"redis:7"}},"networks":{"proxy":{"name":"proxy","external":true},"immich-proxy":{"name":"immich-proxy","external":true}}}`,
+		"docker compose -p failover-npm":                                `{"name":"failover-npm","services":{"npm":{"image":"jc21/nginx-proxy-manager:latest"}},"networks":{"immich-proxy":{"name":"immich-proxy"}}}`,
 		"docker compose -p failover-":                                   `{"name":"x","services":{"vaultwarden":{"image":"vaultwarden/server:latest"}}}`,
 		"docker image inspect --format {{.Size}} {{.Created}} redis:7":  "41000000 2026-09-20T04:00:00.5Z\n",
 		"docker image inspect --format {{.Size}} {{.Created}} vaultwar": "250000000 2026-09-21T04:00:00Z\n",
+		"docker image inspect --format {{.Size}} {{.Created}} jc21":     "1 2026-09-21T04:00:00Z\n",
 	}
 	a.scanImages()
 	im := a.st.Images["immich"].Images
@@ -955,7 +957,7 @@ func TestScanImages(t *testing.T) {
 	}
 	f.outs["docker image inspect --format {{.Size}} {{.Created}} ghcr.io"] = "1 2026-09-22T04:00:00Z"
 	a.scanImages()
-	if !strings.Contains(buf.String(), `msg="imagens: 2 de 3 no TNAS, 0,3 GB"`) {
+	if !strings.Contains(buf.String(), `msg="imagens: 3 de 4 no TNAS, 0,3 GB"`) {
 		t.Fatalf("sem o balanço das imagens: %s", buf)
 	}
 	if a.st.ImagesMsg != "" || a.events[len(a.events)-1].Msg != "todas as imagens estão no TNAS" {

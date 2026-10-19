@@ -1,7 +1,7 @@
 // The settings page and the discovery.
 import {$, cap, chip, confirmAction, day, esc, icon, kv, mono, paint, painted, pending, plural, post, readErr, sentence, st, toLogin, toast} from './core.js';
 import {repaintSetup} from './setup.js';
-import {currentTab, refresh} from './main.js';
+import {currentTab, hashParts, refresh} from './main.js';
 
 // Settings, as a page. Only values that rarely change go in the markup, so
 // the 5 s refresh does not repaint it while the token is being typed.
@@ -115,9 +115,15 @@ export function paintGuarded(elId, html) {
 }
 export const paintSec = (id, html) => paintGuarded(`set-${id}`, html);
 export function repaintSec(id) { painted[`set-${id}`] = null; renderSettings(); repaintSetup(); }
+// One section at a time: the one in the address (#/definicoes/dns), Geral by default.
+export function showSec() {
+  const sub = $(`set-${hashParts()[1]}`) ? hashParts()[1] : 'geral';
+  document.querySelectorAll('.set-sec').forEach(s => { s.hidden = s.id !== `set-${sub}`; });
+}
 export function renderSettings() {
   if (!$('set-geral')) {
     $('settingsBody').innerHTML = ['geral', 'servicos', ...SECTIONS.map(x => x.id), 'conta'].map(id => `<section class="card set-sec" id="set-${id}"></section>`).join('');
+    showSec();
   }
   const mode = pending.has('mode') ? pending.get('mode') : st.mode;
   const iv = pending.has('interval') ? pending.get('interval') : st.check_interval_s;

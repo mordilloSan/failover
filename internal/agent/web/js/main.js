@@ -3,7 +3,7 @@ import {$, clock, confirmAction, dur, lastOk, post, setLastOk, setStatus, st, to
 import {renderGlobal, renderHud, renderTopology, renderWires} from './topology.js';
 import {loadEvents, renderEvents} from './events.js';
 import {openPanel, renderPanel} from './panels.js';
-import {forgetDiscovery, renderSettings, repaintSec, secs} from './settings.js';
+import {forgetDiscovery, renderSettings, repaintSec, secs, showSec} from './settings.js';
 import {renderSetup} from './setup.js';
 import {logout, openPw} from './account.js';
 import './dnd.js'; // dragging a service between the boxes: it listens on its own
@@ -144,7 +144,7 @@ export function route() {
   document.querySelectorAll('[data-sub]').forEach(a => tab === 'settings' && a.dataset.sub === sub ? a.setAttribute('aria-current', 'true') : a.removeAttribute('aria-current'));
   if (tab === 'overview') loadEvents();
   if (st) renderAll();
-  if (tab === 'settings') $(`set-${sub}`)?.scrollIntoView({block: 'start'});
+  if (tab === 'settings') showSec();
   if (tab === 'overview') requestAnimationFrame(() => st && renderWires()); // it had no size while hidden
 }
 addEventListener('hashchange', route);

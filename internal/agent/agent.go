@@ -1532,16 +1532,18 @@ func (a *Agent) scanOnce() {
 	var mu sync.Mutex // guards stacks and missing: the stacks are read side by side
 	stacks := map[string]Stack{}
 	var missing []string
-	scan := func(name, dir, override string) {
-		st, miss := a.scanStack(c, name, dir, override, running[name])
+	scan := func(name, dir, override string, provided []string) []string {
+		st, miss, prov := a.scanStack(c, name, dir, override, running[name], provided)
 		mu.Lock()
 		stacks[name], missing = st, append(missing, miss...)
 		mu.Unlock()
+		return prov
 	}
+	// the NPM first: the networks its compose creates are external to the apps, and exist only while it runs
+	provided := scan("npm", c.NPM.Dir, "", nil)
 	var wg sync.WaitGroup
-	wg.Go(func() { scan("npm", c.NPM.Dir, "") })
 	for _, sv := range c.Services {
-		wg.Go(func() { scan(sv.Name, sv.Dir, sv.Override) })
+		wg.Go(func() { scan(sv.Name, sv.Dir, sv.Override, provided) })
 	}
 	wg.Wait()
 	slices.Sort(missing)
@@ -1565,8 +1567,10 @@ func (a *Agent) scanOnce() {
 
 // scanStack reads one stack's resolved compose: its images and whether the
 // TNAS has them, and what the TNAS lacks for it to start. missing are the
-// images it lacks, or the stack when its compose does not resolve.
-func (a *Agent) scanStack(c Config, name, dir, override string, running bool) (st Stack, missing []string) {
+// images it lacks, or the stack when its compose does not resolve. provided
+// are networks another copy creates, not to ask of the TNAS; the stack's own
+// come back.
+func (a *Agent) scanStack(c Config, name, dir, override string, running bool, provided []string) (st Stack, missing, own []string) {
 	args := slices.Concat([]string{"compose", "-p", "failover-" + name}, c.files(c.Paths.MirrorSubvol, dir, override), []string{"config", "--format", "json"})
 	out, err := a.sys.Output("docker", args...)
 	var info composeInfo
@@ -1574,7 +1578,7 @@ func (a *Agent) scanStack(c Config, name, dir, override string, running bool) (s
 		info, err = analyzeCompose([]byte(out), c.LANIface)
 	}
 	if err != nil {
-		return Stack{Err: err.Error()}, []string{name + " (compose ilegível)"}
+		return Stack{Err: err.Error()}, []string{name + " (compose ilegível)"}, nil
 	}
 	for _, ref := range info.Images {
 		img := Image{Ref: ref, NoPull: info.NoPull[ref]}
@@ -1591,16 +1595,22 @@ func (a *Agent) scanStack(c Config, name, dir, override string, running bool) (s
 		}
 		st.Images = append(st.Images, img)
 	}
-	st.Notes = a.tnasNotes(info, running)
-	return st, missing
+	st.Notes = a.tnasNotes(info, running, provided)
+	return st, missing, info.Provided
 }
 
 // tnasNotes is what the TNAS lacks for a stack to start there: an external
 // network it does not have, a port it publishes that something already
-// holds. A running copy holds its own ports, so running skips them.
-func (a *Agent) tnasNotes(info composeInfo, running bool) []string {
+// holds. A running copy holds its own ports, so running skips them. The
+// networks the NPM copy creates (provided) are missing between failovers by
+// design: creating them by hand would leave the NPM's compose networks it
+// did not make.
+func (a *Agent) tnasNotes(info composeInfo, running bool, provided []string) []string {
 	var notes []string
 	for _, n := range info.External {
+		if slices.Contains(provided, n) {
+			continue
+		}
 		if a.sys.Run("docker", "network", "inspect", n) != nil {
 			notes = append(notes, "a rede "+n+" não existe no TNAS: cria-a com docker network create "+n)
 		}
