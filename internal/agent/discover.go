@@ -571,7 +571,7 @@ func (a *Agent) discover() discovery {
 	var lan *net.IPNet
 	d.Network.TNASIP, d.Network.LANIface, lan = lanOf(a.ifaces(), net.ParseIP(d.Network.RouterIP), routeIface)
 
-	root := filepath.Join(c.Paths.MirrorSubvol, c.Paths.MirrorRoot)
+	root := c.mirrorRoot()
 	d.Mirror.Root = root
 	_, err := os.Stat(root)
 	d.Mirror.Found = err == nil
@@ -621,7 +621,7 @@ func (a *Agent) discover() discovery {
 		}
 		s.Host, s.Hosts = as.host, as.all
 		s.OverrideYAML, s.RequireFreeIP = info.overrideFor(as.keys), info.FreeIP
-		s.Notes = slices.Concat(info.Notes, as.notes, dataNotes(info, c.Paths.MirrorSubvol), a.tnasNotes(info, running[s.Name], npm.Provided))
+		s.Notes = slices.Concat(info.Notes, as.notes, dataNotes(info, c.mirror()), a.tnasNotes(info, running[s.Name], npm.Provided))
 		if s.Host == "" && len(hosts) > 0 {
 			s.Notes = append(s.Notes, "nenhum proxy host do NPM aponta para este compose: o agente só vigia pelo NPM, não o consegue proteger; se é um auxiliar de outro serviço, ignora-o")
 		}

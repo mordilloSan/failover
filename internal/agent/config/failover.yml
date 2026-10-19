@@ -42,6 +42,12 @@ email:                                 # avisos: em Definições → Avisos (Gma
   from: ""                             # vazio: o utilizador
   to: ""                               # vazio: o utilizador
 
+mirror:                                # o espelho por btrfs send, por SSH ao servidor (Definições → Espelho)
+  server: ""                           # utilizador@IP; vazio: o espelho é o backup do TOS
+  subvolume: ""                        # o subvolume btrfs no servidor, só para o script
+  at: "04:30"                          # a sincronização diária; "" só à mão
+  keep: 3                              # snapshots recebidos a guardar no TNAS
+
 nightly:
   prepull_at: "05:00"                  # depois do espelho das 04:30, e ao arrancar; "" desliga
 

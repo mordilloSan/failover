@@ -64,8 +64,9 @@ type Config struct {
 		Dir           string `yaml:"dir"`
 		AlertAfterMin int    `yaml:"alert_after_min"`
 	} `yaml:"npm"`
-	Services    []Service `yaml:"services"`
-	Ignored     []string  `yaml:"ignored,omitempty"` // folders of the mirror the discovery and its watch leave out
+	Mirror      MirrorSync `yaml:"mirror"` // the mirror by btrfs send over SSH (sync.go)
+	Services    []Service  `yaml:"services"`
+	Ignored     []string   `yaml:"ignored,omitempty"` // folders of the mirror the discovery and its watch leave out
 	Maintenance struct {
 		DefaultExpiryMin int `yaml:"default_expiry_min"`
 	} `yaml:"maintenance"`
@@ -149,6 +150,9 @@ func (c *Config) validate() error {
 		}
 	}
 	if err := c.Email.validate(); err != nil {
+		return err
+	}
+	if err := c.Mirror.validate(); err != nil {
 		return err
 	}
 	if at := c.Nightly.PrepullAt; at != "" {
@@ -331,6 +335,9 @@ type State struct {
 	MirrorStale    bool              `json:"mirror_stale,omitempty"`  // told that it stopped
 	MirrorSeen     map[string]int64  `json:"mirror_seen,omitempty"`   // folder → its compose's mtime, an hour ago
 	MirrorNew      []string          `json:"mirror_new,omitempty"`    // new folders, not protected, until seen in the page
+	SyncDay        string            `json:"sync_day,omitempty"`      // the day whose sync at mirror.at ran (or was started)
+	LastSync       time.Time         `json:"last_sync,omitzero"`      // the last snapshot received
+	SyncMsg        string            `json:"sync_msg,omitempty"`      // why the last sync failed
 	Verdict        Verdict           `json:"verdict,omitzero"`
 	NPMAlerted     bool              `json:"npm_alerted,omitempty"`
 	RouterChanged  time.Time         `json:"router_changed,omitzero"` // since when the router answers or not
@@ -365,6 +372,7 @@ type System interface {
 	Answers(ip, zone string) error // the DNS server at ip answers for its own zone
 	SendMail(m Mail) error
 	PortFree(proto, addr string) error // nothing listens on addr of this host (the agent runs with its network)
+	Pipe(from, to []string) error      // from | to, as a shell would (ssh … | btrfs receive)
 }
 
 type Agent struct {
@@ -402,6 +410,7 @@ type Agent struct {
 	pulling    atomic.Bool
 	pullNow    bool // set at start: the next tick pulls whatever the hour, so missing or outdated images come down at once
 	scanning   atomic.Bool
+	syncing    atomic.Bool // a mirror sync runs (sync.go)
 	rescan     atomic.Bool // asked for while a scan ran
 	beats      map[string][]Beat
 	tnasSeen   bool // last TNAS ping, so a change is logged once
@@ -543,6 +552,7 @@ func (a *Agent) Tick(now time.Time) {
 	a.evaluate(p)
 	a.stopIdleNPM()
 	a.nightly()
+	a.syncDue()
 	a.watchMirror()
 	a.flushAlerts()
 	if a.now.Format(time.DateOnly) != a.trimmedOn {
@@ -1351,7 +1361,7 @@ func (a *Agent) snapshot(name string) (string, error) {
 	p := a.cfg.Paths
 	dst := filepath.Join(p.SnapshotsDir, "failover-"+name+"-"+a.now.Format("20060102-150405"))
 	_ = os.MkdirAll(p.SnapshotsDir, 0o755) // if this fails, btrfs says so
-	if err := a.copyMirror(p.MirrorSubvol, dst); err != nil {
+	if err := a.copyMirror(a.cfg.mirror(), dst); err != nil {
 		return "", err
 	}
 	return dst, nil
@@ -1561,7 +1571,7 @@ func (a *Agent) scanOnce() {
 // are networks another copy creates, not to ask of the TNAS; the stack's own
 // come back.
 func (a *Agent) scanStack(c Config, name, dir, override string, running bool, provided []string) (st Stack, missing, own []string) {
-	args := slices.Concat([]string{"compose", "-p", "failover-" + name}, c.files(c.Paths.MirrorSubvol, dir, override), []string{"config", "--format", "json"})
+	args := slices.Concat([]string{"compose", "-p", "failover-" + name}, c.files(c.mirror(), dir, override), []string{"config", "--format", "json"})
 	out, err := a.sys.Output("docker", args...)
 	var info composeInfo
 	if err == nil {
@@ -1649,7 +1659,7 @@ func (a *Agent) nightly() {
 	if due { // a start before prepull_at leaves the night's pull, after the mirror, still to do
 		a.st.LastPull = day
 	}
-	root := a.cfg.Paths.MirrorSubvol
+	root := a.cfg.mirror()
 	jobs := [][]string{slices.Concat([]string{"compose", "-p", "failover-npm"}, a.cfg.files(root, a.cfg.NPM.Dir, ""), []string{"pull", "-q"})}
 	for _, sv := range a.cfg.Services {
 		jobs = append(jobs, slices.Concat([]string{"compose", "-p", "failover-" + sv.Name}, a.cfg.files(root, sv.Dir, sv.Override), []string{"pull", "-q"}))
@@ -1842,6 +1852,7 @@ func (a *Agent) publish() {
 		MirrorChanged    time.Time `json:"mirror_changed,omitzero"`
 		MirrorStale      bool      `json:"mirror_stale"`
 		MirrorNew        []string  `json:"mirror_new"`
+		Mirror           any       `json:"mirror"`
 		Verdict          Verdict   `json:"verdict"`
 	}{
 		a.now, Version, userOf(a.creds.Load()), a.cfg.Mode, a.cfg.CheckIntervalS, a.cfg.StartTimeoutMin, a.cfg.Maintenance.DefaultExpiryMin, a.cfg.hasToken(), a.creds.Load() != nil && a.creds.Load().APITokenHash != "", a.cfg.DNS.APIURL,
@@ -1849,7 +1860,7 @@ func (a *Agent) publish() {
 		a.st.TNASNPM, a.st.MaintUntil, a.st.LastPull, a.cfg.Nightly.PrepullAt, a.cfg.Server.NPMCheckHost,
 		a.st.Images, a.st.ImagesAt, a.scanning.Load(), a.cfg.DNS.Zone, a.beats, svcs, recent,
 		settingsView(&a.cfg), a.st.SetupPending, a.listening, certView{names, notAfter},
-		a.st.MirrorChanged, a.st.MirrorStale, a.st.MirrorNew, a.st.Verdict,
+		a.st.MirrorChanged, a.st.MirrorStale, a.st.MirrorNew, a.mirrorView(), a.st.Verdict,
 	})
 	a.view.Store(&view{b, gzipBytes(b)})
 }

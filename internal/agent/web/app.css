@@ -435,8 +435,9 @@ dialog p { color: var(--muted); }
 .preset:hover, .preset[aria-pressed="true"] { color: var(--text); border-color: var(--primary); }
 .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .pw-field { display: grid; gap: 4px; margin-top: 12px; color: var(--muted); font-size: 12.5px; }
-.pw-field input { padding: 8px 10px; border-radius: var(--radius); border: 1px solid var(--divider); background: var(--well); font-size: 13px; }
-.pw-field input:focus-visible { outline: 2px solid var(--primary); outline-offset: 0; }
+.pw-field input, .pw-field textarea { padding: 8px 10px; border-radius: var(--radius); border: 1px solid var(--divider); background: var(--well); font-size: 13px; }
+.pw-field textarea { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); resize: vertical; word-break: break-all; }
+.pw-field input:focus-visible, .pw-field textarea:focus-visible { outline: 2px solid var(--primary); outline-offset: 0; }
 #pwErr:empty, .token-err:empty { display: none; }
 .svc-open { padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; border-radius: 4px; text-decoration: underline;
   text-decoration-color: color-mix(in srgb, currentColor, transparent 60%); text-underline-offset: 3px; }

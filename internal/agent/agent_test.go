@@ -31,16 +31,36 @@ type fake struct {
 	down     map[string]bool // "host@ip" → HTTPS check fails
 	failCmd  []string        // command prefixes that fail
 	outs     map[string]string
-	scans    []string          // commands run through Output
-	badToken string            // the Technitium refuses this bearer token
-	getErr   map[string]error  // URL prefix → Get fails with this
-	left     map[string]string // compose project → ids docker ps / volume ls still list
-	noNet    map[string]bool   // ip → its DNS resolver does not reach the internet
-	noDNS    map[string]bool   // ip → its DNS server does not answer at all
-	bodies   map[string][]byte // exact URL → what Get answers
-	mails    []Mail            // every email sent
-	failMail error             // SendMail fails with this
-	resolved []string          // every ip whose resolver Resolve asked
+	scans    []string               // commands run through Output
+	badToken string                 // the Technitium refuses this bearer token
+	getErr   map[string]error       // URL prefix → Get fails with this
+	left     map[string]string      // compose project → ids docker ps / volume ls still list
+	noNet    map[string]bool        // ip → its DNS resolver does not reach the internet
+	noDNS    map[string]bool        // ip → its DNS server does not answer at all
+	bodies   map[string][]byte      // exact URL → what Get answers
+	mails    []Mail                 // every email sent
+	failMail error                  // SendMail fails with this
+	resolved []string               // every ip whose resolver Resolve asked
+	recv     func(dir string) error // what a Pipe into btrfs receive leaves in dir (nil: nothing)
+}
+
+// Pipe records "from | to"; the receiving side is simulated by recv.
+func (f *fake) Pipe(from, to []string) error {
+	f.mu.Lock()
+	c := strings.Join(from, " ") + " | " + strings.Join(to, " ")
+	f.cmds = append(f.cmds, c)
+	failed := slices.ContainsFunc(f.failCmd, func(p string) bool { return strings.HasPrefix(c, p) })
+	recv := f.recv
+	f.mu.Unlock()
+	if recv != nil {
+		if err := recv(to[len(to)-1]); err != nil {
+			return err
+		}
+	}
+	if failed {
+		return errors.New("falhou")
+	}
+	return nil
 }
 
 func (f *fake) SendMail(m Mail) error {
@@ -111,7 +131,11 @@ func (f *fake) Run(name string, args ...string) error {
 	case name == "btrfs" && args[1] == "create":
 		return os.Mkdir(args[2], 0o755)
 	case name == "btrfs" && args[1] == "delete":
-		return os.Remove(args[2])
+		return os.RemoveAll(args[2])
+	case name == "ssh-keygen":
+		key := args[len(args)-1]
+		_ = os.WriteFile(key, []byte("PRIVATE"), 0o600)
+		return os.WriteFile(key+".pub", []byte("ssh-ed25519 AAAATEST failover-agent\n"), 0o644)
 	}
 	return nil
 }

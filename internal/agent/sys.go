@@ -44,6 +44,45 @@ func (RealSys) Output(name string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// Pipe runs from | to: from's stdout into to's stdin, both to completion. The
+// error carries the stderr of whichever failed, as Output does.
+func (RealSys) Pipe(from, to []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour) // a first full send of the mirror
+	defer cancel()
+	src, dst := exec.CommandContext(ctx, from[0], from[1:]...), exec.CommandContext(ctx, to[0], to[1:]...)
+	src.Dir, dst.Dir = "/", "/"
+	var srcErr, dstErr bytes.Buffer
+	src.Stderr, dst.Stderr = &srcErr, &dstErr
+	r, err := src.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	dst.Stdin = r
+	if err := src.Start(); err != nil {
+		return fmt.Errorf("%s: %w", from[0], err)
+	}
+	if err := dst.Start(); err != nil {
+		_ = src.Process.Kill()
+		_ = src.Wait()
+		return fmt.Errorf("%s: %w", to[0], err)
+	}
+	werr, rerr := dst.Wait(), src.Wait()
+	tail := func(b bytes.Buffer) string {
+		msg := strings.TrimSpace(b.String())
+		if len(msg) > 400 {
+			msg = "…" + msg[len(msg)-400:]
+		}
+		return msg
+	}
+	if rerr != nil {
+		return fmt.Errorf("%s: %w: %s", from[0], rerr, tail(srcErr))
+	}
+	if werr != nil {
+		return fmt.Errorf("%s: %w: %s", to[0], werr, tail(dstErr))
+	}
+	return nil
+}
+
 // CertError: host answered, with a certificate that did not verify (expired,
 // another name, an unknown CA). It is up: the TNAS serves the same
 // certificate, from the mirror, so a failover would not help.

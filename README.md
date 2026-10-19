@@ -60,6 +60,18 @@ O agente só muda os nomes dos serviços que passa para o TNAS. O resto da zona 
 
 **Password perdida:** `docker exec failover-agent rm /config/user.yml && docker restart failover-agent`, e cria a conta outra vez nos 30 minutos seguintes, com o código novo que o agente escreve no arranque (`docker logs failover-agent`).
 
+### O espelho por btrfs send
+
+Em vez do backup do TOS por rsync, o agente pode trazer o espelho com `btrfs send`/`receive`. Precisa de a pasta dos composes no servidor ser um subvolume btrfs e de o servidor ter SSH.
+
+1. No servidor, cria o utilizador `failover` e guarda o script que a página dá em Definições → Espelho ("Descarregar o script") em `/usr/local/sbin/failover-mirror`, executável. O script tem o subvolume dentro; os snapshots ficam ao lado, em `.failover-snapshots`.
+2. Em `/etc/sudoers.d/failover`: `failover ALL=(root) NOPASSWD: /usr/local/sbin/failover-mirror`.
+3. Em `~failover/.ssh/authorized_keys`, a linha que a página mostra: a chave pública do agente com `restrict,from="<IP do TNAS>",command="sudo /usr/local/sbin/failover-mirror"`. Essa chave só corre o script, só a partir do TNAS, sem shell nem túneis; quem a tiver lê o subvolume, nada mais.
+4. Em Definições → Espelho, o servidor (`failover@192.168.1.66`), o subvolume, a hora e quantos snapshots guardar; "Testar ligação" prova a chave, o comando forçado, o sudo e o script numa só resposta, e diz se a pasta no servidor é um subvolume btrfs, o espaço livre lá, os snapshots de cada lado e se o espelho do TNAS está em btrfs; "Sincronizar agora" faz o primeiro envio, completo (demora o que demorar a copiar tudo; os seguintes só levam a diferença).
+5. Depois do primeiro snapshot recebido, desliga a tarefa de backup do TOS e, se `paths.mirror_root` apontava para uma pasta dentro do backup (`homelab`), põe-no como as pastas estão dentro do subvolume.
+
+Uma sincronização falhada apaga o snapshot parcial e fica nos eventos e na página; o espelho continua a ser o último bom. O aviso de espelho parado conta a partir do último snapshot recebido.
+
 ## Usar
 
 - **Página principal:** a topologia (clientes, servidor, TNAS, internet), os serviços e os eventos.
@@ -69,6 +81,7 @@ O agente só muda os nomes dos serviços que passa para o TNAS. O resto da zona 
 - **Versão:** ao lado do nome, no topo; leva à release no GitHub.
 - **Ícones:** o nome de um ícone do [dashboardicons.com](https://dashboardicons.com), ou o link da sua página. Vazio: o do nome ou da pasta.
 - **Pronto para failover:** depois de cada verificação das imagens (no arranque, na descarga noturna e quando a stack de um serviço muda), o agente testa o token do Technitium e a app Failover com o `*` da zona, faz um snapshot de teste do espelho e vê as imagens e o que o TNAS precisa para cada compose (redes externas, portas livres). A caixa do TNAS diz "Pronto para failover" ou quantos problemas há; um problema novo vai por email.
+- **Espelho por btrfs send (Definições → Espelho):** com um servidor definido, o agente liga-se por SSH ao servidor à hora marcada (e com "Sincronizar agora"), o servidor tira um snapshot só de leitura do subvolume dos composes e envia a diferença desde o anterior; o TNAS recebe-a como um snapshot só de leitura dentro de `paths.mirror_subvol`, nomeado pela hora, e o failover copia do mais recente. Um snapshot é um instante só, por isso as bases de dados chegam coerentes, ao contrário de um rsync de ficheiros em uso. Nada fica à escuta no TNAS: a ligação é só de saída. Ver [o espelho por btrfs send](#o-espelho-por-btrfs-send).
 - **Espelho:** de hora a hora o agente vê se o backup do TOS continua a escrever no espelho (`btrfs subvolume find-new`: ficheiros com dados novos) e se há pastas novas ou composes mudados. Espelho parado há mais de `mirror_stale_days` (2 por defeito), pasta nova ou compose mudado: email; a pasta nova aparece na página até a protegeres ou dispensares.
 - **Avisos por email:** o servidor em baixo (com a hora), failover e regresso (o assunto diz quantos serviços, quando e quanto tempo ficaram no TNAS), erro, NPM do servidor em falha, router, certificado inválido, descarga de imagens (noturna ou ao arrancar) falhada, em observação o que o agente faria, e o agente a reiniciar. Os de uma mesma verificação seguem num só email. Um envio falhado aparece logo nos eventos e tenta-se de novo durante um dia.
 - **Telemóvel:** no browser, "Adicionar ao ecrã inicial" instala a página. Para arrastar um serviço, segura-o meio segundo.
