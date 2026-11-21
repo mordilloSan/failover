@@ -49,18 +49,23 @@ func TestObserveAndNightlyMailed(t *testing.T) {
 func TestCertToldOnceAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	f := &fake{noPing: map[string]bool{}, down: map[string]bool{}, badCert: map[string]bool{"bitwarden.engmariz.com": true}}
+	told := func(evs []Event) (n int) {
+		for _, e := range evs {
+			if strings.Contains(e.Msg, "certificado de bitwarden.engmariz.com inválido") {
+				n++
+			}
+		}
+		return n
+	}
 	a := newTestAgent(t, dir, f)
 	a.Tick(t0)
 	b := newTestAgent(t, dir, f)
+	// The second start trims events older than 30 days by the real clock, which
+	// can drop the first start's event (dated t0), so count only what b adds.
+	loaded := len(b.events)
 	b.Tick(t0.Add(time.Minute))
-	n := 0
-	for _, e := range b.events {
-		if strings.Contains(e.Msg, "certificado de bitwarden.engmariz.com inválido") {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Fatalf("%d avisos do mesmo certificado em dois arranques", n)
+	if n, m := told(a.events), told(b.events[loaded:]); n != 1 || m != 0 {
+		t.Fatalf("%d aviso(s) do certificado no primeiro arranque e %d no segundo (queria 1 e 0)", n, m)
 	}
 }
 
