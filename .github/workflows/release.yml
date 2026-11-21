@@ -1,16 +1,15 @@
-# A merged PR from dev/vX.Y.Z (or a tag v* pushed by hand) → tests, then the
-# image on GHCR and the binary on the release. On a merge the tag vX.Y.Z is
-# made on the merge commit and the release notes are the PR's text.
+# A merged PR from dev/vX.Y.Z → tests, then the image on GHCR and the binary
+# on the release. The tag vX.Y.Z is made on the merge commit and the release
+# notes are the PR's text. Releases go only through gh-release-flow: a tag
+# pushed by hand publishes nothing.
 # The TNAS only pulls ghcr.io/mordillosan/failover-agent; nothing is built there.
 name: release
 
 on:
-  push:
-    tags: ["v*"]
   pull_request:
     types: [closed]
     branches: [main]
-  workflow_dispatch: # a manual run publishes the image tagged with the branch, no release
+  workflow_dispatch: # a manual run on a branch publishes the image tagged with the branch, no release
 
 permissions:
   contents: write
@@ -21,8 +20,8 @@ env:
 
 jobs:
   release:
-    # a PR closed without merging, or from another branch, publishes nothing
-    if: github.event_name != 'pull_request' || (github.event.pull_request.merged && startsWith(github.event.pull_request.head.ref, 'dev/v'))
+    # a PR closed without merging, or from another branch, publishes nothing; a manual run on a tag neither
+    if: (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/')) || (github.event.pull_request.merged && startsWith(github.event.pull_request.head.ref, 'dev/v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -47,7 +46,7 @@ jobs:
               exit 1
             fi
           else
-            v=$GITHUB_REF_NAME
+            v=${GITHUB_REF_NAME//\//-} # a manual run: the branch, with / (not allowed in an image tag) as -
           fi
           echo "version=$v" >>"$GITHUB_OUTPUT"
 
@@ -81,14 +80,14 @@ jobs:
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
           tags=(-t "$IMAGE:$VERSION")
-          if [[ $GITHUB_REF == refs/tags/* || $GITHUB_EVENT_NAME == pull_request ]]; then tags+=(-t "$IMAGE:latest"); fi
+          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then tags+=(-t "$IMAGE:latest"); fi
           docker build --build-arg "VERSION=$VERSION" \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             "${tags[@]}" -f deploy/Dockerfile .
           docker push --all-tags "$IMAGE"
 
       - name: Binário
-        if: steps.v.outputs.skip != 'true' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'pull_request')
+        if: steps.v.outputs.skip != 'true' && github.event_name == 'pull_request'
         env:
           CGO_ENABLED: "0"
           GOOS: linux
@@ -99,14 +98,10 @@ jobs:
         run: |
           go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o failover-agent .
           sha256sum failover-agent > failover-agent.sha256
-          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
-            # the tag only now, after the tests and the image: a failed release leaves none behind
-            if ! git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
-              git tag "$VERSION"
-              git push origin "$VERSION" # with the workflow's token: it does not start this workflow again
-            fi
-            printf '%s\n' "$PR_BODY" > notes.md
-            gh release create "$VERSION" failover-agent failover-agent.sha256 --title "$VERSION" --notes-file notes.md
-          else
-            gh release create "$VERSION" failover-agent failover-agent.sha256 --generate-notes
+          # the tag only now, after the tests and the image: a failed release leaves none behind
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
+            git tag "$VERSION"
+            git push origin "$VERSION"
           fi
+          printf '%s\n' "$PR_BODY" > notes.md
+          gh release create "$VERSION" failover-agent failover-agent.sha256 --title "$VERSION" --notes-file notes.md
