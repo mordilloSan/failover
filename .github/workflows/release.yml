@@ -122,13 +122,13 @@ jobs:
         run: |
           go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o failover-agent .
           scripts/third-party-notices.sh failover-agent THIRD_PARTY_NOTICES.md
-          sha256sum failover-agent > failover-agent.sha256
-          sha256sum THIRD_PARTY_NOTICES.md > THIRD_PARTY_NOTICES.md.sha256
+          # Lets a download be checked with: sha256sum -c --ignore-missing SHA256SUMS
+          sha256sum -- failover-agent THIRD_PARTY_NOTICES.md >SHA256SUMS
           # the tag only now, after the tests and the image: a failed release leaves none behind
           if ! git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
             git tag "$VERSION"
             git push origin "$VERSION"
           fi
           printf '%s\n' "$PR_BODY" > notes.md
-          gh release create "$VERSION" failover-agent failover-agent.sha256 THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.md.sha256 \
+          gh release create "$VERSION" failover-agent THIRD_PARTY_NOTICES.md SHA256SUMS \
             --title "$VERSION" --notes-file notes.md
