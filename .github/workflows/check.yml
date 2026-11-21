@@ -1,11 +1,11 @@
-# Every PR and every push to a dev/* branch: the same checks as `make lint test`,
+# Every PR and every push to main: the same checks as `make lint test`,
 # so a warning is caught before the merge and not at the release.
-name: ci
+name: Check
 
 on:
   pull_request:
   push:
-    branches: ["dev/**"]
+    branches: [main]
 
 permissions:
   contents: read
