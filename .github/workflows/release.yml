@@ -29,7 +29,12 @@ jobs:
       (github.event.pull_request.merged == true &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'dev/v'))
+    # On the job, not the workflow: every closed PR starts this workflow, and a skipped job never joins the group.
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Require passing checks
         if: github.event_name == 'pull_request' # a manual run has no PR
@@ -42,7 +47,8 @@ jobs:
           jq -e --arg self "$GITHUB_WORKFLOW" '[.[] | select(.workflow != $self)] |
             length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' <<< "$checks"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # credentials kept: the Binário step pushes the release tag with git push
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
 
@@ -68,7 +74,7 @@ jobs:
           fi
           echo "version=$v" >>"$GITHUB_OUTPUT"
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: steps.v.outputs.skip != 'true'
         with:
           go-version-file: go.mod
