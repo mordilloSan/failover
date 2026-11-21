@@ -1,31 +1,54 @@
-# A merged PR from dev/vX.Y.Z (or a tag v* pushed by hand) → tests, then the
-# image on GHCR and the binary on the release. On a merge the tag vX.Y.Z is
-# made on the merge commit and the release notes are the PR's text.
+# A merged PR from dev/vX.Y.Z → tests, then the image on GHCR and the binary
+# on the release. The tag vX.Y.Z is made on the merge commit and the release
+# notes are the PR's text. Releases go only through gh-release-flow: a tag
+# pushed by hand publishes nothing.
 # The TNAS only pulls ghcr.io/mordillosan/failover-agent; nothing is built there.
 name: release
 
 on:
-  push:
-    tags: ["v*"]
   pull_request:
     types: [closed]
     branches: [main]
-  workflow_dispatch: # a manual run publishes the image tagged with the branch, no release
+  workflow_dispatch: # a manual run on a branch publishes the image tagged with the branch, no release
 
 permissions:
+  checks: read
   contents: write
   packages: write
+  pull-requests: read
 
 env:
   IMAGE: ghcr.io/mordillosan/failover-agent
 
 jobs:
   release:
-    # a PR closed without merging, or from another branch, publishes nothing
-    if: github.event_name != 'pull_request' || (github.event.pull_request.merged && startsWith(github.event.pull_request.head.ref, 'dev/v'))
+    # Only merged release PRs from this repository: forks cannot publish. A manual run
+    # on a branch publishes only the image; a manual run on a tag publishes nothing.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/')) ||
+      (github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dev/v'))
+    # On the job, not the workflow: every closed PR starts this workflow, and a skipped job never joins the group.
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - name: Require passing checks
+        if: github.event_name == 'pull_request' # a manual run has no PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # This workflow is itself one of the PR's checks, so leave it out.
+          checks=$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json bucket,workflow)
+          jq -e --arg self "$GITHUB_WORKFLOW" '[.[] | select(.workflow != $self)] |
+            length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' <<< "$checks"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # credentials kept: the Binário step pushes the release tag with git push
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
 
@@ -47,11 +70,11 @@ jobs:
               exit 1
             fi
           else
-            v=$GITHUB_REF_NAME
+            v=${GITHUB_REF_NAME//\//-} # a manual run: the branch, with / (not allowed in an image tag) as -
           fi
           echo "version=$v" >>"$GITHUB_OUTPUT"
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: steps.v.outputs.skip != 'true'
         with:
           go-version-file: go.mod
@@ -81,14 +104,14 @@ jobs:
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
           tags=(-t "$IMAGE:$VERSION")
-          if [[ $GITHUB_REF == refs/tags/* || $GITHUB_EVENT_NAME == pull_request ]]; then tags+=(-t "$IMAGE:latest"); fi
+          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then tags+=(-t "$IMAGE:latest"); fi
           docker build --build-arg "VERSION=$VERSION" \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             "${tags[@]}" -f deploy/Dockerfile .
           docker push --all-tags "$IMAGE"
 
       - name: Binário
-        if: steps.v.outputs.skip != 'true' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'pull_request')
+        if: steps.v.outputs.skip != 'true' && github.event_name == 'pull_request'
         env:
           CGO_ENABLED: "0"
           GOOS: linux
@@ -98,15 +121,14 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o failover-agent .
+          scripts/third-party-notices.sh failover-agent THIRD_PARTY_NOTICES.md
           sha256sum failover-agent > failover-agent.sha256
-          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then
-            # the tag only now, after the tests and the image: a failed release leaves none behind
-            if ! git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
-              git tag "$VERSION"
-              git push origin "$VERSION" # with the workflow's token: it does not start this workflow again
-            fi
-            printf '%s\n' "$PR_BODY" > notes.md
-            gh release create "$VERSION" failover-agent failover-agent.sha256 --title "$VERSION" --notes-file notes.md
-          else
-            gh release create "$VERSION" failover-agent failover-agent.sha256 --generate-notes
+          sha256sum THIRD_PARTY_NOTICES.md > THIRD_PARTY_NOTICES.md.sha256
+          # the tag only now, after the tests and the image: a failed release leaves none behind
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
+            git tag "$VERSION"
+            git push origin "$VERSION"
           fi
+          printf '%s\n' "$PR_BODY" > notes.md
+          gh release create "$VERSION" failover-agent failover-agent.sha256 THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.md.sha256 \
+            --title "$VERSION" --notes-file notes.md

@@ -8,8 +8,8 @@ lint:
 	test -z "$$(gofmt -l .)"
 	go vet ./...
 	golangci-lint run ./...
-	shellcheck e2e/run.sh
-	shfmt -d e2e/run.sh
+	shellcheck e2e/run.sh scripts/third-party-notices.sh
+	shfmt -d e2e/run.sh scripts/third-party-notices.sh
 
 # Full end-to-end test against the local Docker (~3 min).
 e2e:
