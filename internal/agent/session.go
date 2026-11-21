@@ -125,7 +125,9 @@ func setSession(w http.ResponseWriter, r *http.Request, tok string, maxAge int) 
 		// Lax, not Strict: a link from another page (Homepage) must still open
 		// the UI logged in. The API only takes JSON posts, which Lax does not let through.
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		// Always Secure: the UI port only serves TLS and answers plain HTTP with a
+		// redirect to HTTPS, so no session is ever set over plain HTTP.
+		Secure: true,
 	})
 }
 
