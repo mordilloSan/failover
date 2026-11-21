@@ -121,11 +121,14 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o failover-agent .
+          scripts/third-party-notices.sh failover-agent THIRD_PARTY_NOTICES.md
           sha256sum failover-agent > failover-agent.sha256
+          sha256sum THIRD_PARTY_NOTICES.md > THIRD_PARTY_NOTICES.md.sha256
           # the tag only now, after the tests and the image: a failed release leaves none behind
           if ! git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
             git tag "$VERSION"
             git push origin "$VERSION"
           fi
           printf '%s\n' "$PR_BODY" > notes.md
-          gh release create "$VERSION" failover-agent failover-agent.sha256 --title "$VERSION" --notes-file notes.md
+          gh release create "$VERSION" failover-agent failover-agent.sha256 THIRD_PARTY_NOTICES.md THIRD_PARTY_NOTICES.md.sha256 \
+            --title "$VERSION" --notes-file notes.md

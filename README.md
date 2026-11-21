@@ -155,4 +155,4 @@ make logs / stop
 
 O `e2e` e o `start` usam os mesmos containers: não corras os dois ao mesmo tempo. Só se testa no TNAS: o Btrfs a sério, o `arping` sobre o `ovs_eth0` e as macvlans.
 
-O merge de um PR de `dev/vX.Y.Z` para o `main` cria a tag `vX.Y.Z` e corre o [release.yml](.github/workflows/release.yml): testes, imagem `ghcr.io/mordillosan/failover-agent` e binário na release, com o texto do PR como notas. As releases saem só pelo gh-release-flow: uma tag `v*` enviada à mão não publica nada.
+O merge de um PR de `dev/vX.Y.Z` para o `main` cria a tag `vX.Y.Z` e corre o [release.yml](.github/workflows/release.yml): testes, imagem `ghcr.io/mordillosan/failover-agent` e binário na release, com o texto do PR como notas. As releases saem só pelo gh-release-flow: uma tag `v*` enviada à mão não publica nada. O [scripts/third-party-notices.sh](scripts/third-party-notices.sh) escreve o `THIRD_PARTY_NOTICES.md` com as licenças dos módulos ligados ao binário e a do Go, que segue como asset da release e na imagem em `/usr/share/doc/failover/`, e o CI falha num PR que traga uma dependência sem ficheiro de licença.

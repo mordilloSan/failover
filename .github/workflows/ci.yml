@@ -37,7 +37,15 @@ jobs:
           install-mode: goinstall
 
       - name: shellcheck
-        run: shellcheck e2e/run.sh
+        run: shellcheck e2e/run.sh scripts/third-party-notices.sh
 
       - name: Testes
         run: go test -race ./...
+
+      # the release's build and notices: a linked module without a licence file fails here, not at the release
+      - name: Third-party notices
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -o "$RUNNER_TEMP/failover-agent" .
+          scripts/third-party-notices.sh "$RUNNER_TEMP/failover-agent" "$RUNNER_TEMP/THIRD_PARTY_NOTICES.md"
