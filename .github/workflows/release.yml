@@ -12,18 +12,36 @@ on:
   workflow_dispatch: # a manual run on a branch publishes the image tagged with the branch, no release
 
 permissions:
+  checks: read
   contents: write
   packages: write
+  pull-requests: read
 
 env:
   IMAGE: ghcr.io/mordillosan/failover-agent
 
 jobs:
   release:
-    # a PR closed without merging, or from another branch, publishes nothing; a manual run on a tag neither
-    if: (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/')) || (github.event.pull_request.merged && startsWith(github.event.pull_request.head.ref, 'dev/v'))
+    # Only merged release PRs from this repository: forks cannot publish. A manual run
+    # on a branch publishes only the image; a manual run on a tag publishes nothing.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/')) ||
+      (github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dev/v'))
     runs-on: ubuntu-latest
     steps:
+      - name: Require passing checks
+        if: github.event_name == 'pull_request' # a manual run has no PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # This workflow is itself one of the PR's checks, so leave it out.
+          checks=$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json bucket,workflow)
+          jq -e --arg self "$GITHUB_WORKFLOW" '[.[] | select(.workflow != $self)] |
+            length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")' <<< "$checks"
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
